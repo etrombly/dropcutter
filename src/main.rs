@@ -152,19 +152,21 @@ pub fn write_stl<T: WriteBytesExt>(out: &mut T, stl: &BinaryStlFile) -> Result<(
 }
 
 pub struct Tool {
-    pub points: Vec<Point3d>,
-    pub circle: Circle
+    pub points: Vec<Line3d>,
+    pub circle: Circle,
 }
 
 impl Tool {
     pub fn new_endmill(radius: f32) -> Tool {
         let circle = Circle::new(Point3d::new(radius, radius, 0.0), radius);
-        let points: Vec<Point3d> = (0..(radius * 20.0) as i32)
+        let points: Vec<Line3d> = (0..(radius * 20.0) as i32)
             .flat_map(|x| {
-                (0..(radius * 20.0) as i32)
-                    .map(move |y| Point3d::new(x as f32 / 10.0, y as f32 / 10.0, 0.0))
+                (0..(radius * 20.0) as i32).map(move |y| Line3d {
+                    p1: Point3d::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
+                    p2: Point3d::new(0.0, 0.0, -1.0),
+                })
             })
-            .filter(|x| circle.in_2d_bounds(x))
+            .filter(|x| circle.in_2d_bounds(&x.p1))
             .collect();
         Tool { points, circle }
     }
@@ -208,7 +210,9 @@ fn main() {
 
     vulkano::impl_vertex!(Point, position);
     */
-    let tool = Tool::new_endmill(5.0);
+    let radius = 1.0;
+    let tool = Tool::new_endmill(radius);
+    /*
     {
         let mut file = File::create("endmill.xyz").unwrap();
         let output = tool.points
@@ -218,6 +222,7 @@ fn main() {
             .join("");
         file.write_all(output.as_bytes()).unwrap();
     }
+    */
 
     let file = File::open("vt_flat.stl").unwrap();
     let mut buf_reader = BufReader::new(file);
@@ -244,17 +249,15 @@ fn main() {
             ),
         ));
     }
-    //let bboxs: Vec<_> = triangles.par_iter().map(|x| x.bbox()).collect();
+    // TODO: add option for overlap on passes
     let max_x = (triangles
         .iter()
         .map(|x| x.bbox().p2.x)
-        .fold(f32::NAN, f32::max)
-        * 10.0) as i32;
+        .fold(f32::NAN, f32::max)) as i32;
     let min_x = (triangles
         .iter()
         .map(|x| x.bbox().p1.x)
-        .fold(f32::NAN, f32::min)
-        * 10.0) as i32;
+        .fold(f32::NAN, f32::min)) as i32;
     let max_y = (triangles
         .iter()
         .map(|x| x.bbox().p2.y)
@@ -266,10 +269,11 @@ fn main() {
         .fold(f32::NAN, f32::min)
         * 10.0) as i32;
     let tests: Vec<Vec<_>> = (min_x..max_x)
+        .step_by(radius as usize)
         .map(|x| {
             (min_y..max_y)
                 .map(move |y| Line3d {
-                    p1: Point3d::new(x as f32 / 10.0, y as f32 / 10.0, 200.0),
+                    p1: Point3d::new(x as f32, y as f32 / 10.0, 200.0),
                     p2: Point3d::new(0.0, 0.0, -1.0),
                 })
                 .collect()
@@ -283,19 +287,34 @@ fn main() {
     let mut result = Vec::new();
     for line in tests {
         let bounds = Line3d {
-            p1: Point3d::new(line[0].p1.x - 5.0, min_y as f32 / 5.0, 0.0),
-            p2: Point3d::new(line[0].p1.x + 5.0, max_y as f32 / 5.0, 0.0),
+            p1: Point3d::new(line[0].p1.x - radius, min_y as f32 / radius, 0.0),
+            p2: Point3d::new(line[0].p1.x + radius, max_y as f32 / radius, 0.0),
         };
         let intersects: Vec<&Triangle3d> = triangles
             .par_iter()
             .filter(|x| x.in_2d_bounds(&bounds))
             .collect();
         for point in &line {
-            let bbox = Line3d{p1: tool.circle.bbox().p1 + point.p1 - tool.circle.center, p2: tool.circle.bbox().p2 + point.p1 - tool.circle.center};
-            let filtered: Vec<_> = intersects.par_iter().filter(|x| x.in_2d_bounds(&bbox)).collect();
-            let points: Vec<Point3d> = filtered
+            let bbox = Line3d {
+                p1: tool.circle.bbox().p1 + point.p1 - tool.circle.center,
+                p2: tool.circle.bbox().p2 + point.p1 - tool.circle.center,
+            };
+            let filtered: Vec<_> = intersects
                 .par_iter()
-                .filter_map(|x| x.intersect(*point))
+                .filter(|x| x.in_2d_bounds(&bbox))
+                .collect();
+            //let points: Vec<Point3d> = filtered
+            //    .par_iter()
+            //    .filter_map(|x| x.intersect(*point))
+            //    .collect();
+            let points: Vec<Point3d> = tool
+                .points
+                .par_iter()
+                .flat_map(|points| {
+                    filtered
+                        .par_iter()
+                        .filter_map(move |tri| tri.intersect(*points + *point))
+                })
                 .collect();
             let max = points.iter().map(|x| x.z).fold(f32::NAN, f32::max);
             if !max.is_nan() {
@@ -315,7 +334,7 @@ fn main() {
         .join("");
     file.write_all(output.as_bytes()).unwrap();
 
-        /*
+    /*
     // Now let's get to the actual example.
     //
     // What we are going to do is very basic: we are going to fill a buffer with 64k integers
