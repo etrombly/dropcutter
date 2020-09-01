@@ -126,9 +126,10 @@ fn main() {
     ////// COMPUTE
     let vk = init_vk();
     let radius = 1.0;
-    let tool = Tool::new_endmill(radius);
+    let angle = 60.; // 90 degree
+    let tool = Tool::new_v_bit(radius, angle);
     {
-        let mut file = File::create("endmill.xyz").unwrap();
+        let mut file = File::create("v_bit.xyz").unwrap();
         let output = tool
             .points
             .iter()
@@ -174,8 +175,8 @@ fn main() {
     */
     let tri_vk = to_tri_vk(&triangles);
 
-    let max_x = (bounds.p2.x * 10.) as i32;
-    let min_x = (bounds.p1.x * 10.) as i32;
+    let max_x = (bounds.p2.x * 50.) as i32;
+    let min_x = (bounds.p1.x * 50.) as i32;
     let max_y = (bounds.p2.y * 10.) as i32;
     let min_y = (bounds.p1.y * 10.) as i32;
     let mut rev = false;
@@ -185,11 +186,11 @@ fn main() {
             rev = !rev;
             if rev {
             (min_y..max_y).rev()
-                .map(move |y| PointVk::new(x as f32 / 10.0, y as f32 / 10.0, bounds.p2.z + 1.))
+                .map(move |y| PointVk::new(x as f32 / 50.00, y as f32 / 10.0, bounds.p1.z))
                 .collect::<Vec<_>>()
             } else {
                 (min_y..max_y)
-                .map(move |y| PointVk::new(x as f32 / 10.0, y as f32 / 10.0, bounds.p2.z + 1.))
+                .map(move |y| PointVk::new(x as f32 / 50.00, y as f32 / 10.0, bounds.p1.z))
                 .collect::<Vec<_>>()
             }
         })
