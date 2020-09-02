@@ -125,7 +125,7 @@ fn main() {
 
     ////// COMPUTE
     let vk = init_vk();
-    let radius = 0.5;
+    let radius = 2.0;
     let angle = 60.; // 60 degree
     let tool = Tool::new_v_bit(radius, angle);
     //let tool = Tool::new_endmill(radius);
@@ -182,9 +182,9 @@ fn main() {
         bounds
     );
     
-    let result: Vec<_> = tests.iter().zip(columns).flat_map(|(row, column)| {
+    let result: Vec<_> = tests.par_iter().zip(columns).flat_map(|(row, column)| {
         let bounds = LineVk{p1: PointVk::new(column - radius ,min_y as f32 / 10.0, 0.), p2: PointVk::new(column + radius,max_y as f32 / 10.0, 0.)};
-        let tris = tri_vk.iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
+        let tris = tri_vk.par_iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
         compute_drop(&tris, &row, &tool, &vk)
     }).collect();
     
