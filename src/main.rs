@@ -126,9 +126,9 @@ fn main() {
     ////// COMPUTE
     let vk = init_vk();
     let radius = 0.5;
-    //let angle = 60.; // 60 degree
-    //let tool = Tool::new_v_bit(radius, angle);
-    let tool = Tool::new_endmill(radius);
+    let angle = 60.; // 60 degree
+    let tool = Tool::new_v_bit(radius, angle);
+    //let tool = Tool::new_endmill(radius);
     {
         let mut file = File::create("v_bit.xyz").unwrap();
         let output = tool
@@ -149,14 +149,14 @@ fn main() {
     let bounds = get_bounds(&triangles);
     let tri_vk = to_tri_vk(&triangles);
 
-    let max_x = (bounds.p2.x * 10.) as i32;
-    let min_x = (bounds.p1.x * 10.) as i32;
+    let max_x = (bounds.p2.x * 20.) as i32;
+    let min_x = (bounds.p1.x * 20.) as i32;
     let max_y = (bounds.p2.y * 10.) as i32;
     let min_y = (bounds.p1.y * 10.) as i32;
     let mut rev = false;
     let columns: Vec<_> = (min_x..max_x + 2)
     .step_by((radius * 20.) as usize)
-    .map(|x| x as f32 / 10.)
+    .map(|x| x as f32 / 20.)
     .collect();
     let tests: Vec<Vec<PointVk>> = (min_x..max_x + 2)
         .step_by((radius * 20.) as usize)
@@ -165,12 +165,12 @@ fn main() {
             
             if rev {
             (min_y..max_y + 1).step_by((radius * 10.) as usize).rev()
-                .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
+                .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 10.0, bounds.p1.z))
                 .collect::<Vec<_>>()
             } else {
                 (min_y..max_y + 1).step_by((radius * 10.) as usize)
                 .map(move |y| {
-                    PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z)})
+                    PointVk::new(x as f32 / 20.00, y as f32 / 10.0, bounds.p1.z)})
                 .collect::<Vec<_>>()
             }
         })
@@ -181,11 +181,30 @@ fn main() {
         tests.len(),
         bounds
     );
+    /*
     let result: Vec<_> = tests.iter().zip(columns).flat_map(|(row, column)| {
         let bounds = LineVk{p1: PointVk::new(column - radius ,min_y as f32 / 10.0, 0.), p2: PointVk::new(column + radius,max_y as f32 / 10.0, 0.)};
         let tris = tri_vk.iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
         compute_drop(&tris, &row, &tool, &vk)
     }).collect();
+    */
+    let result: Vec<_> = tests.par_iter().zip(columns).flat_map(|(row, column)| {
+        let bounds = LineVk{p1: PointVk::new(column - radius ,min_y as f32 / 10.0, 0.), p2: PointVk::new(column + radius,max_y as f32 / 10.0, 0.)};
+        let tris = tri_vk.iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
+        row.par_chunks(64).flat_map(|test| {
+            //println!("{:?}", bounds);
+            let mut bounds = bounds;
+            let y_min = test[0].position[1].min(test.last().unwrap().position[1]);
+            let y_max = test[0].position[1].max(test.last().unwrap().position[1]);
+            bounds.p1.position[1] = tool.bbox.p1.position[1] + y_min;
+            bounds.p2.position[1] = tool.bbox.p2.position[1] + y_max;
+            //println!("{:?} {:?}", bounds, test);
+            let tris = tris.par_iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
+            compute_drop(&tris, test, &tool, &vk)
+        }).collect::<Vec<_>>()
+        
+    }).collect();
+    
     println!("tests: {:?} results: {:?}", tests.iter().map(|x| x.len()).sum::<usize>(), result.len());
 
     let mut file = File::create("pcl.xyz").unwrap();
