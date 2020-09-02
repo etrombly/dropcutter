@@ -181,28 +181,11 @@ fn main() {
         tests.len(),
         bounds
     );
-    /*
+    
     let result: Vec<_> = tests.iter().zip(columns).flat_map(|(row, column)| {
         let bounds = LineVk{p1: PointVk::new(column - radius ,min_y as f32 / 10.0, 0.), p2: PointVk::new(column + radius,max_y as f32 / 10.0, 0.)};
         let tris = tri_vk.iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
         compute_drop(&tris, &row, &tool, &vk)
-    }).collect();
-    */
-    let result: Vec<_> = tests.par_iter().zip(columns).flat_map(|(row, column)| {
-        let bounds = LineVk{p1: PointVk::new(column - radius ,min_y as f32 / 10.0, 0.), p2: PointVk::new(column + radius,max_y as f32 / 10.0, 0.)};
-        let tris = tri_vk.iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
-        row.par_chunks(64).flat_map(|test| {
-            //println!("{:?}", bounds);
-            let mut bounds = bounds;
-            let y_min = test[0].position[1].min(test.last().unwrap().position[1]);
-            let y_max = test[0].position[1].max(test.last().unwrap().position[1]);
-            bounds.p1.position[1] = tool.bbox.p1.position[1] + y_min;
-            bounds.p2.position[1] = tool.bbox.p2.position[1] + y_max;
-            //println!("{:?} {:?}", bounds, test);
-            let tris = tris.par_iter().filter(|x| x.in_2d_bounds(&bounds)).copied().collect::<Vec<_>>();
-            compute_drop(&tris, test, &tool, &vk)
-        }).collect::<Vec<_>>()
-        
     }).collect();
     
     println!("tests: {:?} results: {:?}", tests.iter().map(|x| x.len()).sum::<usize>(), result.len());
