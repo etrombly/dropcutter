@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     let mut triangles = to_triangles3d(&stl);
 
     // initialize vulkan
-    let vk = init_vk();
+    let vk = Vk::new()?;
 
     // TODO: add support for multiple passes with different tools?
     let radius = opt.diameter / 2.;
