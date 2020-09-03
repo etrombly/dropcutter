@@ -3,134 +3,48 @@ use printer_geo::{compute::*, geo::*, util::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
-    io::{BufReader, Error, ErrorKind, Result, Write},
+    path::PathBuf,
+    io::{BufReader, Error, ErrorKind,Write},
 };
+use structopt::StructOpt;
+use anyhow::Result;
 
-// pub struct Tool {
-// pub points: Vec<Line3d>,
-// pub circle: Circle,
-// }
-//
-// impl Tool {
-// pub fn new_endmill(radius: f32) -> Tool {
-// let circle = Circle::new(Point3d::new(radius, radius, 0.0), radius);
-// let points: Vec<Line3d> = (0..(radius * 20.0) as i32)
-// .flat_map(|x| {
-// (0..(radius * 20.0) as i32).map(move |y| Line3d {
-// p1: Point3d::new(x as f32 / 10.0, y as f32 / 10.0, 0.0),
-// p2: Point3d::new(0.0, 0.0, -1.0),
-// })
-// })
-// .filter(|x| circle.in_2d_bounds(&x.p1))
-// .collect();
-// Tool { points, circle }
-// }
-// }
+#[derive(Debug, StructOpt)]
+#[structopt(name = "example", about = "An example of StructOpt usage.")]
+struct Opt {
+    /// Activate debug mode
+    // short and long flags (-d, --debug) will be deduced from the field's name
+    #[structopt(short, long, parse(from_os_str))]
+    file: PathBuf,
 
-fn main() {
-    // let radius = 1.0;
-    // let tool = Tool::new_endmill(radius);
-    // {
-    // let mut file = File::create("endmill.xyz").unwrap();
-    // let output = tool.points
-    // .iter()
-    // .map(|x| format!("{:.3} {:.3} {:.3}\n", x.x, x.y, x.z))
-    // .collect::<Vec<String>>()
-    // .join("");
-    // file.write_all(output.as_bytes()).unwrap();
-    // }
+    #[structopt(short, long)]
+    diameter: f64,
+}
 
-    let file = File::open("flower.stl").unwrap();
+fn main() -> Result<()>{
+    // parse input args, may remove this once I build the GUI
+    let opt = Opt::from_args();
+
+    // open stl 
+    let file = File::open(opt.file)?;
     let mut buf_reader = BufReader::new(file);
     let stl = read_stl(&mut buf_reader).unwrap();
     let triangles = to_triangles3d(&stl);
-
-    ///// REGULAR
-    // TODO: add option for overlap on passes
-    // let bounds = get_bounds(&triangles);
-    // let max_x = bounds.p2.x as i32;
-    // let min_x = bounds.p1.x as i32;
-    // let max_y = (bounds.p2.y * 10.) as i32;
-    // let min_y = (bounds.p1.y * 10.) as i32;
-    // let tests: Vec<Vec<_>> = (min_x..max_x)
-    // .step_by(radius as usize)
-    // .map(|x| {
-    // (min_y..max_y)
-    // .map(move |y| Line3d {
-    // p1: Point3d::new(x as f32, y as f32 / 10.0, 200.0),
-    // p2: Point3d::new(0.0, 0.0, -1.0),
-    // })
-    // .collect()
-    // })
-    // .collect();
-    // println!("{:?} {:?}", triangles[0], bboxs[0]);
-    // let intersects: Vec<&Triangle3d> = triangles.par_iter().filter(|x|
-    // x.bbox().in_2d_bounds(&test)).collect(); println!("{:?} {:?}\n{:?}",
-    // triangles.len(), intersects.len(), intersects); let line = Line3d{p1:
-    // test, p2: Point3d::new(0.0, 0.0, -1.0)}; let points: Vec<Point3d> =
-    // triangles.par_iter().filter_map(|x| x.intersect(line)).collect();
-    // let mut result = Vec::new();
-    // for line in tests {
-    // let bounds = Line3d {
-    // p1: Point3d::new(line[0].p1.x - radius, min_y as f32 / radius, 0.0),
-    // p2: Point3d::new(line[0].p1.x + radius, max_y as f32 / radius, 0.0),
-    // };
-    // let intersects: Vec<&Triangle3d> = triangles
-    // .par_iter()
-    // .filter(|x| x.in_2d_bounds(&bounds))
-    // .collect();
-    // for point in &line {
-    // let bbox = Line3d {
-    // p1: tool.circle.bbox().p1 + point.p1 - tool.circle.center,
-    // p2: tool.circle.bbox().p2 + point.p1 - tool.circle.center,
-    // };
-    // let filtered: Vec<_> = intersects
-    // .par_iter()
-    // .filter(|x| x.in_2d_bounds(&bbox))
-    // .collect();
-    // Just do one point per step
-    // let points: Vec<Point3d> = filtered
-    // .par_iter()
-    // .filter_map(|x| x.intersect(*point))
-    // .collect();
-    // Use tool instead
-    //
-    // let points: Vec<Point3d> = tool
-    // .points
-    // .par_iter()
-    // .flat_map(|points| {
-    // filtered
-    // .par_iter()
-    // .filter_map(move |tri| tri.intersect(*points + *point))
-    // })
-    // .collect();
-    // /
-    // let max = points.iter().map(|x| x.z).fold(f32::NAN, f32::max);
-    // if !max.is_nan() {
-    // result.push(Point3d {
-    // x: point.p1.x,
-    // y: point.p1.y,
-    // z: max,
-    // });
-    // }
-    // }
-    // }
-    // let mut file = File::create("pcl.xyz").unwrap();
-    // let output = result
-    // .iter()
-    // .map(|x| format!("{:.3} {:.3} {:.3}\n", x.x, x.y, x.z))
-    // .collect::<Vec<String>>()
-    // .join("");
-    // file.write_all(output.as_bytes()).unwrap();
-
-    ////// COMPUTE
+   
+    // initialize vulkan
     let vk = init_vk();
-    let radius = 2.0;
-    let angle = 60.; // 60 degree
+
+    // TODO: change radius to diameter
+    // TODO: add support for multiple passes with different tools? or just run multiple times
+    // build tool
+    let radius = opt.diameter;
+    let angle = 30.; // 30 degree
     let tool = Tool::new_v_bit(radius, angle);
     //let tool = Tool::new_endmill(radius);
+
+    // TODO: remove writing out the tool to a file once it's working well
     {
-        let mut file = File::create("v_bit.xyz").unwrap();
+        let mut file = File::create("v_bit.xyz")?;
         let output = tool
             .points
             .iter()
@@ -142,13 +56,14 @@ fn main() {
             })
             .collect::<Vec<String>>()
             .join("");
-        file.write_all(output.as_bytes()).unwrap();
+        file.write_all(output.as_bytes())?;
 
         println!("tool bounds: {:?}", tool.bbox);
     }
+
+    // get the bounds for the model
     let bounds = get_bounds(&triangles);
     let tri_vk = to_tri_vk(&triangles);
-
     let max_x = (bounds.p2.x * 20.) as i32;
     let min_x = (bounds.p1.x * 20.) as i32;
     let max_y = (bounds.p2.y * 10.) as i32;
@@ -219,5 +134,6 @@ fn main() {
         }
         last = line;
     }
-    file.write_all(output.as_bytes()).unwrap();
+    file.write_all(output.as_bytes())?;
+    Ok(())
 }
