@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::arg_enum;
 use float_cmp::approx_eq;
 use printer_geo::{compute::*, geo::*, stl::*};
@@ -30,9 +30,27 @@ impl ToolType {
     }
 }
 
+fn parse_stepover(src: &str) -> Result<f32> {
+    let stepover = src.parse::<f32>()?;
+    if stepover < 1. || stepover > 100. {
+        Err(anyhow!("stepover must be between 1 and 100"))
+    } else {
+        Ok(stepover)
+    }
+}
+
+fn parse_angle(src: &str) -> Result<f32> {
+    let angle = src.parse::<f32>()?;
+    if angle < 1. || angle > 180. {
+        Err(anyhow!("angle must be between 1 and 180"))
+    } else {
+        Ok(angle)
+    }
+}
+
 // set up program arguments
 #[derive(Debug, StructOpt)]
-#[structopt(name = "Droppcutter")]
+#[structopt(name = "Dropcutter")]
 struct Opt {
     #[structopt(short, long, parse(from_os_str))]
     input: PathBuf,
@@ -43,10 +61,13 @@ struct Opt {
     #[structopt(short, long)]
     diameter: f32,
 
-    #[structopt(short, long)]
+    #[structopt(short, long, parse(try_from_str = parse_angle))]
     angle: Option<f32>,
 
-    #[structopt(short, long, possible_values = &ToolType::variants(), case_insensitive = true)]
+    #[structopt(short, long, default_value="100", parse(try_from_str = parse_stepover))]
+    stepover: f32,
+
+    #[structopt(short, long, possible_values = &ToolType::variants(), default_value="ball", case_insensitive = true)]
     tool: ToolType,
 }
 
@@ -66,6 +87,7 @@ fn main() -> Result<()> {
 
     // TODO: add support for multiple passes with different tools?
     let radius = opt.diameter / 2.;
+    let stepover = opt.diameter * ( opt.stepover / 100.);
     let tool = opt.tool.create(radius, opt.angle);
 
     // TODO: remove writing out the tool to a file once it's working well (or add it
@@ -100,8 +122,8 @@ fn main() -> Result<()> {
 
     // can't step by floats in rust, so need to scale up
     // TODO: scaling by 10 gives .1mm precision, is that good enough?
-    let max_x = (bounds.p2.x * 20.) as i32;
-    let min_x = (bounds.p1.x * 20.) as i32;
+    let max_x = (bounds.p2.x * 10.) as i32;
+    let min_x = (bounds.p1.x * 10.) as i32;
     let max_y = (bounds.p2.y * 10.) as i32;
     let min_y = (bounds.p1.y * 10.) as i32;
 
@@ -109,15 +131,15 @@ fn main() -> Result<()> {
     let mut rev = true;
 
     // find the columns to use later for filtering triangles
-    let columns: Vec<_> = (min_x..max_x + 2)
-        .step_by((radius * 20.) as usize)
-        .map(|x| x as f32 / 20.)
+    let columns: Vec<_> = (min_x..max_x + 1)
+        .step_by((stepover * 10.) as usize)
+        .map(|x| x as f32 / 10.)
         .collect();
 
     // create a set of points to check tool intersection
     // TODO: add a spiral pattern
-    let tests: Vec<Vec<PointVk>> = (min_x..max_x + 2)
-        .step_by((radius * 20.) as usize)
+    let tests: Vec<Vec<PointVk>> = (min_x..max_x + 1)
+        .step_by((stepover * 10.) as usize)
         .map(|x| {
             rev = !rev;
 
@@ -126,12 +148,12 @@ fn main() -> Result<()> {
                 (min_y..max_y + 1)
                     .step_by((radius * 10.) as usize)
                     .rev()
-                    .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             } else {
                 (min_y..max_y + 1)
                     .step_by((radius * 10.) as usize)
-                    .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             }
         })
