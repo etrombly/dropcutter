@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::arg_enum;
 use float_cmp::approx_eq;
-use printer_geo::{compute::*, stl::*, geo::*};
+use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     let file = File::open(opt.input)?;
     let mut buf_reader = BufReader::new(file);
     let stl = read_stl(&mut buf_reader).unwrap();
-    let triangles = to_triangles3d(&stl);
+    let mut triangles = to_triangles3d(&stl);
 
     // initialize vulkan
     let vk = init_vk();
@@ -88,7 +88,14 @@ fn main() -> Result<()> {
 
     // get the bounds for the model
     let bounds = get_bounds(&triangles);
-    // TODO: shift the model lower edge to x: 0 y: 0
+    // shift the model lower edge to x: 0 y: 0
+    triangles
+        .par_iter_mut()
+        .for_each(|tri| tri.translate(-bounds.p1.x, -bounds.p1.y, -bounds.p1.z));
+    // get new bounds
+    let bounds = get_bounds(&triangles);
+
+    // trnaslate triangles to a vulkan friendly format
     let tri_vk = to_tri_vk(&triangles);
 
     // can't step by floats in rust, so need to scale up
@@ -99,7 +106,7 @@ fn main() -> Result<()> {
     let min_y = (bounds.p1.y * 10.) as i32;
 
     // used to track direction for column travel
-    let mut rev = false;
+    let mut rev = true;
 
     // find the columns to use later for filtering triangles
     let columns: Vec<_> = (min_x..max_x + 2)
