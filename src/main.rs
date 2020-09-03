@@ -175,7 +175,7 @@ fn main() -> Result<()> {
                 .copied()
                 .collect::<Vec<_>>();
             // check for highest Z intersection with tool for each point in this column
-            compute_drop(&tris, &row, &tool, &vk)
+            compute_drop(&tris, &row, &tool, &vk).unwrap()
         })
         .collect();
 
