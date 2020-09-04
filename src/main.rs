@@ -1,6 +1,7 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
+use indicatif::ProgressBar;
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
@@ -9,7 +10,6 @@ use std::{
     path::PathBuf,
 };
 use structopt::StructOpt;
-use indicatif::ProgressBar;
 
 // supported tool types
 arg_enum! {
@@ -65,8 +65,11 @@ struct Opt {
     #[structopt(short, long, parse(try_from_str = parse_angle))]
     angle: Option<f32>,
 
-    #[structopt(short, long, default_value="100", parse(try_from_str = parse_stepover))]
+    #[structopt(long, default_value="100", parse(try_from_str = parse_stepover))]
     stepover: f32,
+
+    #[structopt(short, long)]
+    stepdown: Option<f32>,
 
     #[structopt(short, long, possible_values = &ToolType::variants(), default_value="ball", case_insensitive = true)]
     tool: ToolType,
@@ -88,7 +91,7 @@ fn main() -> Result<()> {
 
     // TODO: add support for multiple passes with different tools?
     let radius = opt.diameter / 2.;
-    let stepover = opt.diameter * ( opt.stepover / 100.);
+    let stepover = opt.diameter * (opt.stepover / 100.);
     let tool = opt.tool.create(radius, opt.angle);
 
     // TODO: remove writing out the tool to a file once it's working well (or add it
@@ -184,16 +187,39 @@ fn main() -> Result<()> {
         .collect();
     bar.finish();
 
+    // start multi-pass processing
+    let stepdown = match opt.stepdown {
+        Some(x) => x,
+        None => bounds.p2.z - bounds.p1.z,
+    };
+    let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
+    let points: Vec<Vec<_>> = result
+        .iter()
+        .map(|x| {
+            (1..steps + 1)
+                .map(|step| match step as f32 * -stepdown {
+                    z if z > x.position[2] => PointVk::new(x.position[0], x.position[1], z),
+                    _ => *x,
+                })
+                .collect()
+        })
+        .collect();
+
     // TODO: remove writing out the point cloud once done debugging, or add it as a
     // debug option
     let mut file = File::create("pcl.xyz")?;
-    let output = result
+
+    let output = points
         .iter()
-        .map(|x| {
-            format!(
-                "{:.3} {:.3} {:.3}\n",
-                x.position[0], x.position[1], x.position[2]
-            )
+        .flat_map(|x| {
+            x.iter()
+                .map(|y| {
+                    format!(
+                        "{:.3} {:.3} {:.3}\n",
+                        y.position[0], y.position[1], y.position[2]
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect::<Vec<String>>()
         .join("");
@@ -206,21 +232,34 @@ fn main() -> Result<()> {
     // TODO: add actual feedrate
     let mut output = format!("G1 Z{:.3} F300\n", bounds.p2.z);
 
-    // Move to initial X,Y then plunge to initial Z
-    output.push_str(&format!(
-        "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
-        last.position[0], last.position[1], last.position[2]
-    ));
-    for line in result {
-        if !approx_eq!(f32, last.position[1], line.position[1], ulps = 2)
-            || !approx_eq!(f32, last.position[1], line.position[1], ulps = 2)
-        {
-            output.push_str(&format!(
-                "G1 X{:.3} Y{:.3} Z{:.3}\n",
-                line.position[0], line.position[1], line.position[2]
-            ));
+    let rows = points[0].len();
+    for row in 0..rows {
+        output.push_str(&format!(
+            "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
+            points[0][row].position[0], points[0][row].position[1], points[0][row].position[2]
+        ));
+        for column in 0..points.len() {
+            if !approx_eq!(
+                f32,
+                last.position[1],
+                points[column][row].position[1],
+                ulps = 2
+            ) || !approx_eq!(
+                f32,
+                last.position[2],
+                points[column][row].position[2],
+                ulps = 2
+            ) {
+                output.push_str(&format!(
+                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                    points[column][row].position[0],
+                    points[column][row].position[1],
+                    points[column][row].position[2]
+                ));
+            }
+            last = points[column][row];
         }
-        last = line;
+        output.push_str(&format!("G0 Z{:.3}\n", bounds.p2.z));
     }
     file.write_all(output.as_bytes())?;
     Ok(())
