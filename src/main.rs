@@ -135,14 +135,14 @@ fn main() -> Result<()> {
     let mut rev = true;
 
     // find the columns to use later for filtering triangles
-    let columns: Vec<_> = (min_x..max_x + 1)
+    let columns: Vec<_> = (min_x..=max_x)
         .step_by((stepover * 10.) as usize)
         .map(|x| x as f32 / 10.)
         .collect();
 
     // create a set of points to check tool intersection
     // TODO: add a spiral pattern
-    let tests: Vec<Vec<PointVk>> = (min_x..max_x + 1)
+    let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
         .step_by((stepover * 10.) as usize)
         .map(|x| {
             rev = !rev;
@@ -150,14 +150,12 @@ fn main() -> Result<()> {
             // alternate direction every other column
             // TODO: find a better value for the Y sampling value .1mm now
             if rev {
-                (min_y..max_y + 1)
-                    .step_by((10.) as usize)
+                (min_y..=max_y)
                     .rev()
                     .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             } else {
-                (min_y..max_y + 1)
-                    .step_by((10.) as usize)
+                (min_y..=max_y)
                     .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             }
