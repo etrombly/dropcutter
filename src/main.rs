@@ -165,10 +165,10 @@ fn main() -> Result<()> {
         .collect();
 
     let bar = ProgressBar::new(tests.len() as u64);
-    let result: Vec<_> = tests
+    let result: Vec<Vec<_>> = tests
         .par_iter()
         .zip(columns)
-        .flat_map(|(row, column)| {
+        .map(|(row, column)| {
             // find bounding box for this column
             let bounds = LineVk {
                 p1: PointVk::new(column - radius, min_y as f32 / 10.0, 0.),
@@ -193,13 +193,17 @@ fn main() -> Result<()> {
         None => bounds.p2.z - bounds.p1.z,
     };
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
-    let points: Vec<Vec<_>> = result
-        .iter()
-        .map(|x| {
-            (1..steps + 1)
-                .map(|step| match step as f32 * -stepdown {
-                    z if z > x.position[2] => PointVk::new(x.position[0], x.position[1], z),
-                    _ => *x,
+    let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
+        .map(|step| {
+            result
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|x| match step as f32 * -stepdown {
+                            z if z > x.position[2] => PointVk::new(x.position[0], x.position[1], z),
+                            _ => *x,
+                        })
+                        .collect()
                 })
                 .collect()
         })
@@ -211,13 +215,18 @@ fn main() -> Result<()> {
 
     let output = points
         .iter()
-        .flat_map(|x| {
-            x.iter()
-                .map(|y| {
-                    format!(
-                        "{:.3} {:.3} {:.3}\n",
-                        y.position[0], y.position[1], y.position[2]
-                    )
+        .flat_map(|layer| {
+            layer
+                .iter()
+                .flat_map(|row| {
+                    row.iter()
+                        .map(|point| {
+                            format!(
+                                "{:.3} {:.3} {:.3}\n",
+                                point.position[0], point.position[1], point.position[2]
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>()
         })
@@ -226,40 +235,35 @@ fn main() -> Result<()> {
     file.write_all(output.as_bytes())?;
 
     let mut file = File::create(opt.output)?;
-    let mut last = result[0];
+    let mut last = result[0][0];
     // start by moving to max Z
     // TODO: add a safe travel height
     // TODO: add actual feedrate
     let mut output = format!("G1 Z{:.3} F300\n", bounds.p2.z);
 
-    let rows = points[0].len();
-    for row in 0..rows {
+    for layer in points {
         output.push_str(&format!(
             "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
-            points[0][row].position[0], points[0][row].position[1], points[0][row].position[2]
+            layer[0][0].position[0], layer[0][0].position[1], layer[0][0].position[2]
         ));
-        for column in 0..points.len() {
-            if !approx_eq!(
-                f32,
-                last.position[1],
-                points[column][row].position[1],
-                ulps = 2
-            ) || !approx_eq!(
-                f32,
-                last.position[2],
-                points[column][row].position[2],
-                ulps = 2
-            ) {
-                output.push_str(&format!(
-                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
-                    points[column][row].position[0],
-                    points[column][row].position[1],
-                    points[column][row].position[2]
-                ));
+        for row in layer {
+            output.push_str(&format!(
+                "G0 X{:.3} Y{:.3} Z{:.3}\n",
+                row[0].position[0], row[0].position[1], row[0].position[2]
+            ));
+            for point in row {
+                if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
+                    || !approx_eq!(f32, last.position[2], point.position[2], ulps = 2)
+                {
+                    output.push_str(&format!(
+                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                        point.position[0], point.position[1], point.position[2]
+                    ));
+                }
+                last = point;
             }
-            last = points[column][row];
+            output.push_str(&format!("G0 Z{:.3}\n", bounds.p2.z));
         }
-        output.push_str(&format!("G0 Z{:.3}\n", bounds.p2.z));
     }
     file.write_all(output.as_bytes())?;
     Ok(())
