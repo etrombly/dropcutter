@@ -110,10 +110,10 @@ fn main() -> Result<()> {
 
     // get the bounds for the model
     let bounds = get_bounds(&triangles);
-    // shift the model lower edge to x: 0 y: 0
+    // shift the model lower edge to x: 0 y: 0 and z_max to 0
     triangles
         .par_iter_mut()
-        .for_each(|tri| tri.translate(-bounds.p1.x, -bounds.p1.y, -bounds.p1.z));
+        .for_each(|tri| tri.translate(-bounds.p1.x, -bounds.p1.y, -bounds.p2.z));
     // get new bounds
     let bounds = get_bounds(&triangles);
 
@@ -144,15 +144,16 @@ fn main() -> Result<()> {
             rev = !rev;
 
             // alternate direction every other column
+            // TODO: find a better value for the Y sampling value .1mm now
             if rev {
                 (min_y..max_y + 1)
-                    .step_by((radius * 10.) as usize)
+                    .step_by((10.) as usize)
                     .rev()
                     .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             } else {
                 (min_y..max_y + 1)
-                    .step_by((radius * 10.) as usize)
+                    .step_by((10.) as usize)
                     .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             }
@@ -198,7 +199,8 @@ fn main() -> Result<()> {
     let mut last = result[0];
     // start by moving to max Z
     // TODO: add a safe travel height
-    let mut output = format!("G1 Z{:.3}\n", bounds.p2.z);
+    // TODO: add actual feedrate
+    let mut output = format!("G1 Z{:.3} F300\n", bounds.p2.z);
 
     // Move to initial X,Y then plunge to initial Z
     output.push_str(&format!(
