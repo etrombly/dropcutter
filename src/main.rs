@@ -128,8 +128,8 @@ fn main() -> Result<()> {
     // TODO: scaling by 10 gives .1mm precision, is that good enough?
     let max_x = (bounds.p2.x * 10.) as i32;
     let min_x = (bounds.p1.x * 10.) as i32;
-    let max_y = (bounds.p2.y * 10.) as i32;
-    let min_y = (bounds.p1.y * 10.) as i32;
+    let max_y = (bounds.p2.y * 40.) as i32;
+    let min_y = (bounds.p1.y * 40.) as i32;
 
     // used to track direction for column travel
     let mut rev = true;
@@ -153,12 +153,12 @@ fn main() -> Result<()> {
                 (min_y..max_y + 1)
                     .step_by((10.) as usize)
                     .rev()
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 40.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             } else {
                 (min_y..max_y + 1)
                     .step_by((10.) as usize)
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 40.0, bounds.p1.z))
                     .collect::<Vec<_>>()
             }
         })
