@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
 };
 use structopt::StructOpt;
+use indicatif::ProgressBar;
 
 // supported tool types
 arg_enum! {
@@ -160,6 +161,7 @@ fn main() -> Result<()> {
         })
         .collect();
 
+    let bar = ProgressBar::new(tests.len() as u64);
     let result: Vec<_> = tests
         .par_iter()
         .zip(columns)
@@ -176,9 +178,11 @@ fn main() -> Result<()> {
                 .copied()
                 .collect::<Vec<_>>();
             // check for highest Z intersection with tool for each point in this column
+            bar.inc(1);
             compute_drop(&tris, &row, &tool, &vk).unwrap()
         })
         .collect();
+    bar.finish();
 
     // TODO: remove writing out the point cloud once done debugging, or add it as a
     // debug option
