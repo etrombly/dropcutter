@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
 use indicatif::ProgressBar;
+use ndarray::arr2;
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
@@ -134,16 +135,9 @@ fn main() -> Result<()> {
     // used to track direction for column travel
     let mut rev = true;
 
-    // find the columns to use later for filtering triangles
-    let columns: Vec<_> = (min_x..=max_x)
-        .step_by((stepover * 10.) as usize)
-        .map(|x| x as f32 / 10.)
-        .collect();
-
     // create a set of points to check tool intersection
     // TODO: add a spiral pattern
     let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
-        .step_by((stepover * 10.) as usize)
         .map(|x| {
             rev = !rev;
 
@@ -163,27 +157,61 @@ fn main() -> Result<()> {
         .collect();
 
     let bar = ProgressBar::new(tests.len() as u64);
-    let result: Vec<Vec<_>> = tests
-        .par_iter()
-        .zip(columns)
-        .map(|(row, column)| {
-            // find bounding box for this column
-            let bounds = LineVk {
-                p1: PointVk::new(column - radius, min_y as f32 / 10.0, 0.),
-                p2: PointVk::new(column + radius, max_y as f32 / 10.0, 0.),
-            };
-            // filter mesh to only tris in this column
-            let tris = tri_vk
-                .par_iter()
-                .filter(|x| x.in_2d_bounds(&bounds))
-                .copied()
-                .collect::<Vec<_>>();
-            // check for highest Z intersection with tool for each point in this column
+    let results: Vec<Vec<_>> = tests
+        .iter()
+        .map(|test| {
+            let filtered= tri_vk.par_iter().copied().filter(|tri| tri.filter_row(test[0].position[0] - radius, test[0].position[0] + radius)).collect::<Vec<_>>();
             bar.inc(1);
-            compute_drop(&tris, &row, &tool, &vk).unwrap()
+            compute_drop(&filtered, &test, &vk).unwrap()
         })
         .collect();
     bar.finish();
+
+    println!(
+        "{:?} {:?} {:?} {:?}",
+        results[1][1],
+        PointVk::new(1 as f32 * stepover, 1 as f32 / 10., 0.),
+        tool.points[0],
+        tool.points[0] + PointVk::new(1 as f32 * stepover, 1 as f32 / 10., 0.)
+    );
+    let processed: Vec<Vec<_>> = (0..results.len()).into_par_iter().step_by((radius * stepover) as usize)
+        .map(|x| {
+            (0..results[0].len())
+                .map(|y| {
+                    let max = tool
+                        .points
+                        .iter()
+                        .map(|tpoint| {
+                            let x_offset = (x as f32 + (tpoint.position[0] * stepover)) as i32;
+                            let y_offset = (y as f32 + (tpoint.position[1] * 10.)) as i32;
+                            if x_offset < results.len() as i32 && x_offset >= 0 && y_offset < results[0].len() as i32 && y_offset >= 0{
+                                results[x_offset as usize][y_offset as usize].position[2] - tpoint.position[2]
+                            } else {
+                                bounds.p1.z
+                            }
+                        })
+                        .fold(0. / 0., f32::max);
+                    PointVk::new(x as f32 /10., y as f32 / 10., max)
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut file = File::create("pcl.xyz")?;
+
+    let output = processed
+        .iter()
+        .flat_map(|column| {
+            column.iter().map(|point| {
+                format!(
+                    "{:.3} {:.3} {:.3}\n",
+                    point.position[0], point.position[1], point.position[2]
+                )
+            })
+        })
+        .collect::<Vec<String>>()
+        .join("");
+    file.write_all(output.as_bytes())?;
 
     // start multi-pass processing
     let stepdown = match opt.stepdown {
@@ -193,7 +221,7 @@ fn main() -> Result<()> {
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
-            result
+            processed
                 .iter()
                 .map(|row| {
                     row.iter()
@@ -207,33 +235,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    // TODO: remove writing out the point cloud once done debugging, or add it as a
-    // debug option
-    let mut file = File::create("pcl.xyz")?;
-
-    let output = points
-        .iter()
-        .flat_map(|layer| {
-            layer
-                .iter()
-                .flat_map(|row| {
-                    row.iter()
-                        .map(|point| {
-                            format!(
-                                "{:.3} {:.3} {:.3}\n",
-                                point.position[0], point.position[1], point.position[2]
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<String>>()
-        .join("");
-    file.write_all(output.as_bytes())?;
-
     let mut file = File::create(opt.output)?;
-    let mut last = result[0][0];
+    let mut last = processed[0][0];
     // start by moving to max Z
     // TODO: add a safe travel height
     // TODO: add actual feedrate
