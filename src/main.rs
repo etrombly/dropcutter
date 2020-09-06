@@ -173,15 +173,14 @@ fn main() -> Result<()> {
 
     let columns = results.len();
     let rows = results[0].len();
-    println!("{:?} {:?}", columns, rows);
     // process height map with selected tool to find heights
     let processed: Vec<Vec<_>> = ((radius * 20.) as usize..columns)
-        .into_par_iter()
+        //.into_par_iter()
         // space each column based on radius and stepover
-        .step_by((radius * 20. * stepover) as usize)
+        .step_by((radius * 20. * stepover).ceil() as usize)
         .map(|x| {
             // TODO: this isn't working for alternating rows, fix it later
-            let steps = if (x / (radius * 20.) as usize) % 2 == 0 {
+            let steps = if ((x as f32 / (radius * 20.)).ceil() as usize) % 2 == 0 {
                 ((radius * 20.) as usize..rows).collect::<Vec<_>>().into_par_iter()
             } else {
                 ((radius * 20.) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
