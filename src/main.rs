@@ -125,65 +125,111 @@ fn main() -> Result<()> {
     let tri_vk = to_tri_vk(&triangles);
 
     // can't step by floats in rust, so need to scale up
-    // TODO: scaling by 10 gives .1mm precision, is that good enough?
-    let max_x = (bounds.p2.x * 10.) as i32;
-    let min_x = (bounds.p1.x * 10.) as i32;
-    let max_y = (bounds.p2.y * 10.) as i32;
-    let min_y = (bounds.p1.y * 10.) as i32;
+    // TODO: scaling by 20 gives .05mm precision, is that good enough?
+    let max_x = (bounds.p2.x * 20.) as i32;
+    let min_x = (bounds.p1.x * 20.) as i32;
+    let max_y = (bounds.p2.y * 20.) as i32;
+    let min_y = (bounds.p1.y * 20.) as i32;
 
-    // used to track direction for column travel
-    let mut rev = true;
-
-    // find the columns to use later for filtering triangles
-    let columns: Vec<_> = (min_x..=max_x)
-        .step_by((stepover * 10.) as usize)
-        .map(|x| x as f32 / 10.)
-        .collect();
-
-    // create a set of points to check tool intersection
+    // create the test points for the height map at .05mm resolution
     // TODO: add a spiral pattern
     let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
-        .step_by((stepover * 10.) as usize)
         .map(|x| {
-            rev = !rev;
-
-            // alternate direction every other column
-            // TODO: find a better value for the Y sampling value .1mm now
-            if rev {
                 (min_y..=max_y)
-                    .rev()
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 20.0, bounds.p1.z))
                     .collect::<Vec<_>>()
-            } else {
-                (min_y..=max_y)
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
-                    .collect::<Vec<_>>()
-            }
         })
         .collect();
 
     let bar = ProgressBar::new(tests.len() as u64);
-    let result: Vec<Vec<_>> = tests
-        .par_iter()
-        .zip(columns)
-        .map(|(row, column)| {
-            // find bounding box for this column
+    // create height map
+    let results: Vec<Vec<_>> = tests
+        .iter()
+        .map(|test| {
+            // bounding box for this column
             let bounds = LineVk {
-                p1: PointVk::new(column - radius, min_y as f32 / 10.0, 0.),
-                p2: PointVk::new(column + radius, max_y as f32 / 10.0, 0.),
+                p1: PointVk::new(test[0].position[0] - radius, min_y as f32 / 20., 0.),
+                p2: PointVk::new(test[0].position[0] + radius, max_y as f32 / 20., 0.),
             };
-            // filter mesh to only tris in this column
-            let tris = tri_vk
+            // filter out triangles that aren't contained in or intersect this column
+            let filtered: Vec<_> = tri_vk
                 .par_iter()
-                .filter(|x| x.in_2d_bounds(&bounds))
                 .copied()
-                .collect::<Vec<_>>();
-            // check for highest Z intersection with tool for each point in this column
+                .filter(|tri| tri.filter_row(bounds))
+                .collect();
             bar.inc(1);
-            compute_drop(&tris, &row, &tool, &vk).unwrap()
+            // ray cast on the GPU to figure out the highest point for each point in this
+            // column
+            compute_drop(&filtered, &test, &vk).unwrap()
         })
         .collect();
     bar.finish();
+
+    // write out height map
+    // TODO: add support for reading back in
+    let encoded = bincode::serialize(&results).unwrap();
+    let mut file = File::create("out.map")?;
+    file.write_all(&encoded).unwrap();
+
+    let columns = results.len();
+    let rows = results[0].len();
+    println!("{:?} {:?}", columns, rows);
+    // process height map with selected tool to find heights
+    let processed: Vec<Vec<_>> = ((radius * 20.) as usize..columns)
+        .into_par_iter()
+        // space each column based on radius and stepover
+        .step_by((radius * 20. * stepover) as usize)
+        .map(|x| {
+            // TODO: this isn't working for alternating rows, fix it later
+            let steps = if (x / (radius * 20.) as usize) % 2 == 0 {
+                ((radius * 20.) as usize..rows).collect::<Vec<_>>().into_par_iter()
+            } else {
+                ((radius * 20.) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
+            };
+            steps
+                .map(|y| {
+                    let max = tool
+                        .points
+                        .iter()
+                        .map(|tpoint| {
+                            // for each point in the tool adjust it's location to the height map and calculate the intersection
+                            let x_offset = (x as f32 + (tpoint.position[0] * 20.)).round() as i32;
+                            let y_offset = (y as f32 + (tpoint.position[1] * 20.)).round() as i32;
+                            if x_offset < columns as i32
+                                && x_offset >= 0
+                                && y_offset < rows as i32
+                                && y_offset >= 0
+                            {
+
+                                results[x_offset as usize][y_offset as usize].position[2]
+                                    - tpoint.position[2]
+                            } else {
+                                bounds.p1.z
+                            }
+                        })
+                        .fold(0. / 0., f32::max); // same as calling max on all the values for this tool to find the heighest
+                    PointVk::new(x as f32 / 20., y as f32 / 20., max)
+                })
+                .collect()
+        })
+        .collect();
+
+    // write out the height map to a point cloud for debugging
+    let mut file = File::create("pcl.xyz")?;
+
+    let output = results
+        .iter()
+        .flat_map(|column| {
+            column.iter().map(|point| {
+                format!(
+                    "{:.3} {:.3} {:.3}\n",
+                    point.position[0], point.position[1], point.position[2]
+                )
+            })
+        })
+        .collect::<Vec<String>>()
+        .join("");
+    file.write_all(output.as_bytes())?;
 
     // start multi-pass processing
     let stepdown = match opt.stepdown {
@@ -193,7 +239,7 @@ fn main() -> Result<()> {
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
-            result
+            processed
                 .iter()
                 .map(|row| {
                     row.iter()
@@ -207,33 +253,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    // TODO: remove writing out the point cloud once done debugging, or add it as a
-    // debug option
-    let mut file = File::create("pcl.xyz")?;
-
-    let output = points
-        .iter()
-        .flat_map(|layer| {
-            layer
-                .iter()
-                .flat_map(|row| {
-                    row.iter()
-                        .map(|point| {
-                            format!(
-                                "{:.3} {:.3} {:.3}\n",
-                                point.position[0], point.position[1], point.position[2]
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<String>>()
-        .join("");
-    file.write_all(output.as_bytes())?;
-
     let mut file = File::create(opt.output)?;
-    let mut last = result[0][0];
+    let mut last = processed[0][0];
     // start by moving to max Z
     // TODO: add a safe travel height
     // TODO: add actual feedrate
@@ -246,17 +267,17 @@ fn main() -> Result<()> {
         ));
         for row in layer {
             output.push_str(&format!(
-                "G0 X{:.3} Y{:.3} Z{:.3}\n",
+                "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
                 row[0].position[0], row[0].position[1], row[0].position[2]
             ));
             for point in row {
-                if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
+                 if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
                     || !approx_eq!(f32, last.position[2], point.position[2], ulps = 2)
                 {
-                    output.push_str(&format!(
-                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
-                        point.position[0], point.position[1], point.position[2]
-                    ));
+                output.push_str(&format!(
+                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                    point.position[0], point.position[1], point.position[2]
+                ));
                 }
                 last = point;
             }
