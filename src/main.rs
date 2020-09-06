@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
 use indicatif::ProgressBar;
-use ndarray::arr2;
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
@@ -126,80 +125,99 @@ fn main() -> Result<()> {
     let tri_vk = to_tri_vk(&triangles);
 
     // can't step by floats in rust, so need to scale up
-    // TODO: scaling by 10 gives .1mm precision, is that good enough?
-    let max_x = (bounds.p2.x * 10.) as i32;
-    let min_x = (bounds.p1.x * 10.) as i32;
-    let max_y = (bounds.p2.y * 10.) as i32;
-    let min_y = (bounds.p1.y * 10.) as i32;
+    // TODO: scaling by 20 gives .05mm precision, is that good enough?
+    let max_x = (bounds.p2.x * 20.) as i32;
+    let min_x = (bounds.p1.x * 20.) as i32;
+    let max_y = (bounds.p2.y * 20.) as i32;
+    let min_y = (bounds.p1.y * 20.) as i32;
 
-    // used to track direction for column travel
-    let mut rev = true;
-
-    // create a set of points to check tool intersection
+    // create the test points for the height map at .05mm resolution
     // TODO: add a spiral pattern
     let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
         .map(|x| {
-            rev = !rev;
-
-            // alternate direction every other column
-            // TODO: find a better value for the Y sampling value .1mm now
-            if rev {
                 (min_y..=max_y)
-                    .rev()
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
+                    .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 20.0, bounds.p1.z))
                     .collect::<Vec<_>>()
-            } else {
-                (min_y..=max_y)
-                    .map(move |y| PointVk::new(x as f32 / 10.00, y as f32 / 10.0, bounds.p1.z))
-                    .collect::<Vec<_>>()
-            }
         })
         .collect();
 
     let bar = ProgressBar::new(tests.len() as u64);
+    // create height map
     let results: Vec<Vec<_>> = tests
         .iter()
         .map(|test| {
-            let filtered= tri_vk.par_iter().copied().filter(|tri| tri.filter_row(test[0].position[0] - radius, test[0].position[0] + radius)).collect::<Vec<_>>();
+            // bounding box for this column
+            let bounds = LineVk {
+                p1: PointVk::new(test[0].position[0] - radius, min_y as f32 / 20., 0.),
+                p2: PointVk::new(test[0].position[0] + radius, max_y as f32 / 20., 0.),
+            };
+            // filter out triangles that aren't contained in or intersect this column
+            let filtered: Vec<_> = tri_vk
+                .par_iter()
+                .copied()
+                .filter(|tri| tri.filter_row(bounds))
+                .collect();
             bar.inc(1);
+            // ray cast on the GPU to figure out the highest point for each point in this
+            // column
             compute_drop(&filtered, &test, &vk).unwrap()
         })
         .collect();
     bar.finish();
 
-    println!(
-        "{:?} {:?} {:?} {:?}",
-        results[1][1],
-        PointVk::new(1 as f32 * stepover, 1 as f32 / 10., 0.),
-        tool.points[0],
-        tool.points[0] + PointVk::new(1 as f32 * stepover, 1 as f32 / 10., 0.)
-    );
-    let processed: Vec<Vec<_>> = (0..results.len()).into_par_iter().step_by((radius * stepover) as usize)
+    // write out height map
+    // TODO: add support for reading back in
+    let encoded = bincode::serialize(&results).unwrap();
+    let mut file = File::create("out.map")?;
+    file.write_all(&encoded).unwrap();
+
+    let columns = results.len();
+    let rows = results[0].len();
+    println!("{:?} {:?}", columns, rows);
+    // process height map with selected tool to find heights
+    let processed: Vec<Vec<_>> = ((radius * 20.) as usize..columns)
+        .into_par_iter()
+        // space each column based on radius and stepover
+        .step_by((radius * 20. * stepover) as usize)
         .map(|x| {
-            (0..results[0].len())
+            // TODO: this isn't working for alternating rows, fix it later
+            let steps = if (x / (radius * 20.) as usize) % 2 == 0 {
+                ((radius * 20.) as usize..rows).collect::<Vec<_>>().into_par_iter()
+            } else {
+                ((radius * 20.) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
+            };
+            steps
                 .map(|y| {
                     let max = tool
                         .points
                         .iter()
                         .map(|tpoint| {
-                            let x_offset = (x as f32 + (tpoint.position[0] * stepover)) as i32;
-                            let y_offset = (y as f32 + (tpoint.position[1] * 10.)) as i32;
-                            if x_offset < results.len() as i32 && x_offset >= 0 && y_offset < results[0].len() as i32 && y_offset >= 0{
-                                results[x_offset as usize][y_offset as usize].position[2] - tpoint.position[2]
+                            // for each point in the tool adjust it's location to the height map and calculate the intersection
+                            let x_offset = (x as f32 + (tpoint.position[0] * 20.)).round() as i32;
+                            let y_offset = (y as f32 + (tpoint.position[1] * 20.)).round() as i32;
+                            if x_offset < columns as i32
+                                && x_offset >= 0
+                                && y_offset < rows as i32
+                                && y_offset >= 0
+                            {
+
+                                results[x_offset as usize][y_offset as usize].position[2]
+                                    - tpoint.position[2]
                             } else {
                                 bounds.p1.z
                             }
                         })
-                        .fold(0. / 0., f32::max);
-                    PointVk::new(x as f32 /10., y as f32 / 10., max)
+                        .fold(0. / 0., f32::max); // same as calling max on all the values for this tool to find the heighest
+                    PointVk::new(x as f32 / 20., y as f32 / 20., max)
                 })
                 .collect()
         })
         .collect();
 
+    // write out the height map to a point cloud for debugging
     let mut file = File::create("pcl.xyz")?;
 
-    let output = processed
+    let output = results
         .iter()
         .flat_map(|column| {
             column.iter().map(|point| {
@@ -249,17 +267,17 @@ fn main() -> Result<()> {
         ));
         for row in layer {
             output.push_str(&format!(
-                "G0 X{:.3} Y{:.3} Z{:.3}\n",
+                "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
                 row[0].position[0], row[0].position[1], row[0].position[2]
             ));
             for point in row {
-                if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
+                 if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
                     || !approx_eq!(f32, last.position[2], point.position[2], ulps = 2)
                 {
-                    output.push_str(&format!(
-                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
-                        point.position[0], point.position[1], point.position[2]
-                    ));
+                output.push_str(&format!(
+                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                    point.position[0], point.position[1], point.position[2]
+                ));
                 }
                 last = point;
             }
