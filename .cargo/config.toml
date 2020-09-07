@@ -1,2 +1,12 @@
 [build]
 rustflags = "-C target-feature=+sse"
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."https://github.com/etrombly/printer_geo"]
+git = "https://github.com/etrombly/printer_geo"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

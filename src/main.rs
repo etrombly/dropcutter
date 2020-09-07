@@ -25,7 +25,9 @@ impl ToolType {
     pub fn create(&self, radius: f32, angle: Option<f32>, scale: f32) -> Tool {
         match self {
             ToolType::Endmill => Tool::new_endmill(radius, scale),
-            ToolType::VBit => Tool::new_v_bit(radius, angle.expect("V-Bit requires tool angle"), scale),
+            ToolType::VBit => {
+                Tool::new_v_bit(radius, angle.expect("V-Bit requires tool angle"), scale)
+            },
             ToolType::Ball => Tool::new_ball(radius, scale),
         }
     }
@@ -294,7 +296,10 @@ fn main() -> Result<()> {
                 }
                 last = point;
             }
-            output.push_str(&format!("G1 X{:?} Y{:?} Z{:?}\nG0 Z{:.2}\n", last[0], last[1], last[2], bounds.p2.z));
+            output.push_str(&format!(
+                "G1 X{:?} Y{:?} Z{:?}\nG0 Z{:.2}\n",
+                last[0], last[1], last[2], bounds.p2.z
+            ));
         }
     }
     file.write_all(output.as_bytes())?;
