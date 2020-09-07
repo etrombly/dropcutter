@@ -22,11 +22,11 @@ arg_enum! {
 }
 
 impl ToolType {
-    pub fn create(&self, radius: f32, angle: Option<f32>) -> Tool {
+    pub fn create(&self, radius: f32, angle: Option<f32>, scale: f32) -> Tool {
         match self {
-            ToolType::Endmill => Tool::new_endmill(radius),
-            ToolType::VBit => Tool::new_v_bit(radius, angle.expect("V-Bit requires tool angle")),
-            ToolType::Ball => Tool::new_ball(radius),
+            ToolType::Endmill => Tool::new_endmill(radius, scale),
+            ToolType::VBit => Tool::new_v_bit(radius, angle.expect("V-Bit requires tool angle"), scale),
+            ToolType::Ball => Tool::new_ball(radius, scale),
         }
     }
 }
@@ -49,6 +49,15 @@ fn parse_angle(src: &str) -> Result<f32> {
     }
 }
 
+fn parse_resolution(src: &str) -> Result<f32> {
+    let resolution = src.parse::<f32>()?;
+    if resolution < 0.001 || resolution > 1. {
+        Err(anyhow!("resolution must be between 0.001 and 1.0"))
+    } else {
+        Ok(resolution)
+    }
+}
+
 // set up program arguments
 #[derive(Debug, StructOpt)]
 #[structopt(name = "Dropcutter")]
@@ -68,6 +77,9 @@ struct Opt {
     #[structopt(long, default_value="100", parse(try_from_str = parse_stepover))]
     stepover: f32,
 
+    #[structopt(short, long, default_value="0.05", parse(try_from_str = parse_resolution))]
+    resolution: f32,
+
     #[structopt(short, long)]
     stepdown: Option<f32>,
 
@@ -78,6 +90,8 @@ struct Opt {
 fn main() -> Result<()> {
     // parse input args, may remove this once I build the GUI
     let opt = Opt::from_args();
+
+    let scale = 1. / opt.resolution;
 
     // open stl
     // TODO: give a nicer error if this isn't a valid stl
@@ -92,7 +106,7 @@ fn main() -> Result<()> {
     // TODO: add support for multiple passes with different tools?
     let radius = opt.diameter / 2.;
     let stepover = opt.diameter * (opt.stepover / 100.);
-    let tool = opt.tool.create(radius, opt.angle);
+    let tool = opt.tool.create(radius, opt.angle, scale);
 
     // TODO: remove writing out the tool to a file once it's working well (or add it
     // as a debug option)
@@ -101,12 +115,7 @@ fn main() -> Result<()> {
         let output = tool
             .points
             .iter()
-            .map(|x| {
-                format!(
-                    "{:.3} {:.3} {:.3}\n",
-                    x.position[0], x.position[1], x.position[2]
-                )
-            })
+            .map(|x| format!("{:.3} {:.3} {:.3}\n", x[0], x[1], x[2]))
             .collect::<Vec<String>>()
             .join("");
         file.write_all(output.as_bytes())?;
@@ -126,37 +135,43 @@ fn main() -> Result<()> {
 
     // can't step by floats in rust, so need to scale up
     // TODO: scaling by 20 gives .05mm precision, is that good enough?
-    let max_x = (bounds.p2.x * 20.) as i32;
-    let min_x = (bounds.p1.x * 20.) as i32;
-    let max_y = (bounds.p2.y * 20.) as i32;
-    let min_y = (bounds.p1.y * 20.) as i32;
+    let max_x = (bounds.p2.x * scale) as i32;
+    let min_x = (bounds.p1.x * scale) as i32;
+    let max_y = (bounds.p2.y * scale) as i32;
+    let min_y = (bounds.p1.y * scale) as i32;
 
     // create the test points for the height map at .05mm resolution
     // TODO: add a spiral pattern
     let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
         .map(|x| {
-                (min_y..=max_y)
-                    .map(move |y| PointVk::new(x as f32 / 20.00, y as f32 / 20.0, bounds.p1.z))
-                    .collect::<Vec<_>>()
+            (min_y..=max_y)
+                .map(move |y| PointVk::new(x as f32 / scale, y as f32 / scale, bounds.p1.z))
+                .collect::<Vec<_>>()
         })
         .collect();
 
     let bar = ProgressBar::new(tests.len() as u64);
     // create height map
+
+    // DEBUG: timer for triangle filtering
+    // let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
     let results: Vec<Vec<_>> = tests
         .iter()
         .map(|test| {
             // bounding box for this column
             let bounds = LineVk {
-                p1: PointVk::new(test[0].position[0] - radius, min_y as f32 / 20., 0.),
-                p2: PointVk::new(test[0].position[0] + radius, max_y as f32 / 20., 0.),
+                p1: PointVk::new(test[0][0] - radius, min_y as f32 / scale, 0.),
+                p2: PointVk::new(test[0][0] + radius, max_y as f32 / scale, 0.),
             };
             // filter out triangles that aren't contained in or intersect this column
+            // let clock = std::time::Instant::now();
             let filtered: Vec<_> = tri_vk
                 .par_iter()
                 .copied()
                 .filter(|tri| tri.filter_row(bounds))
                 .collect();
+            // let this_timer = std::rc::Rc::get_mut(&mut timer).unwrap();
+            //*this_timer += clock.elapsed();
             bar.inc(1);
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
@@ -164,6 +179,7 @@ fn main() -> Result<()> {
         })
         .collect();
     bar.finish();
+    // println!("{:?}", timer);
 
     // write out height map
     // TODO: add support for reading back in
@@ -174,17 +190,17 @@ fn main() -> Result<()> {
     let columns = results.len();
     let rows = results[0].len();
     // process height map with selected tool to find heights
-    let processed: Vec<Vec<_>> = ((radius * 20.) as usize..columns)
+    let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
         .into_par_iter()
         // space each column based on radius and stepover
-        .step_by((radius * 20. * stepover).ceil() as usize)
+        .step_by((radius * stepover * scale).ceil() as usize)
         .enumerate()
         .map(|(column_num, x)| {
             // alternate direction for each column, have to collect into a vec to get types to match
             let steps = if column_num % 2 == 0 {
-                ((radius * 20.) as usize..rows).collect::<Vec<_>>().into_par_iter()
+                ((radius * scale) as usize..rows).collect::<Vec<_>>().into_par_iter()
             } else {
-                ((radius * 20.) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
+                ((radius * scale) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
             };
             steps
                 .map(|y| {
@@ -193,22 +209,22 @@ fn main() -> Result<()> {
                         .iter()
                         .map(|tpoint| {
                             // for each point in the tool adjust it's location to the height map and calculate the intersection
-                            let x_offset = (x as f32 + (tpoint.position[0] * 20.)).round() as i32;
-                            let y_offset = (y as f32 + (tpoint.position[1] * 20.)).round() as i32;
+                            let x_offset = (x as f32 + (tpoint[0] * scale)).round() as i32;
+                            let y_offset = (y as f32 + (tpoint[1] * scale)).round() as i32;
                             if x_offset < columns as i32
                                 && x_offset >= 0
                                 && y_offset < rows as i32
                                 && y_offset >= 0
                             {
 
-                                results[x_offset as usize][y_offset as usize].position[2]
-                                    - tpoint.position[2]
+                                results[x_offset as usize][y_offset as usize][2]
+                                    - tpoint[2]
                             } else {
                                 bounds.p1.z
                             }
                         })
                         .fold(0. / 0., f32::max); // same as calling max on all the values for this tool to find the heighest
-                    PointVk::new(x as f32 / 20., y as f32 / 20., max)
+                    PointVk::new(x as f32 / scale, y as f32 / scale, max)
                 })
                 .collect()
         })
@@ -220,12 +236,9 @@ fn main() -> Result<()> {
     let output = results
         .iter()
         .flat_map(|column| {
-            column.iter().map(|point| {
-                format!(
-                    "{:.3} {:.3} {:.3}\n",
-                    point.position[0], point.position[1], point.position[2]
-                )
-            })
+            column
+                .iter()
+                .map(|point| format!("{:.3} {:.3} {:.3}\n", point[0], point[1], point[2]))
         })
         .collect::<Vec<String>>()
         .join("");
@@ -244,7 +257,7 @@ fn main() -> Result<()> {
                 .map(|row| {
                     row.iter()
                         .map(|x| match step as f32 * -stepdown {
-                            z if z > x.position[2] => PointVk::new(x.position[0], x.position[1], z),
+                            z if z > x[2] => PointVk::new(x[0], x[1], z),
                             _ => *x,
                         })
                         .collect()
@@ -263,21 +276,21 @@ fn main() -> Result<()> {
     for layer in points {
         output.push_str(&format!(
             "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
-            layer[0][0].position[0], layer[0][0].position[1], layer[0][0].position[2]
+            layer[0][0][0], layer[0][0][1], layer[0][0][2]
         ));
         for row in layer {
             output.push_str(&format!(
                 "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
-                row[0].position[0], row[0].position[1], row[0].position[2]
+                row[0][0], row[0][1], row[0][2]
             ));
             for point in row {
-                 if !approx_eq!(f32, last.position[1], point.position[1], ulps = 2)
-                    || !approx_eq!(f32, last.position[2], point.position[2], ulps = 2)
+                if !approx_eq!(f32, last[1], point[1], ulps = 2)
+                    || !approx_eq!(f32, last[2], point[2], ulps = 2)
                 {
-                output.push_str(&format!(
-                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
-                    point.position[0], point.position[1], point.position[2]
-                ));
+                    output.push_str(&format!(
+                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                        point[0], point[1], point[2]
+                    ));
                 }
                 last = point;
             }
