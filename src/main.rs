@@ -271,30 +271,30 @@ fn main() -> Result<()> {
     // start by moving to max Z
     // TODO: add a safe travel height
     // TODO: add actual feedrate
-    let mut output = format!("G1 Z{:.3} F300\n", bounds.p2.z);
+    let mut output = format!("G1 Z{:.2} F300\n", bounds.p2.z);
 
     for layer in points {
         output.push_str(&format!(
-            "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
+            "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
             layer[0][0][0], layer[0][0][1], layer[0][0][2]
         ));
         for row in layer {
             output.push_str(&format!(
-                "G0 X{:.3} Y{:.3}\nG0 Z{:.3}\n",
+                "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
                 row[0][0], row[0][1], row[0][2]
             ));
             for point in row {
-                if !approx_eq!(f32, last[1], point[1], ulps = 2)
+                if !approx_eq!(f32, last[0], point[0], ulps = 2)
                     || !approx_eq!(f32, last[2], point[2], ulps = 2)
                 {
                     output.push_str(&format!(
-                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
+                        "G1 X{:.2} Y{:.3} Z{:.2}\n",
                         point[0], point[1], point[2]
                     ));
                 }
                 last = point;
             }
-            output.push_str(&format!("G0 Z{:.3}\n", bounds.p2.z));
+            output.push_str(&format!("G1 X{:?} Y{:?} Z{:?}\nG0 Z{:.2}\n", last[0], last[1], last[2], bounds.p2.z));
         }
     }
     file.write_all(output.as_bytes())?;
