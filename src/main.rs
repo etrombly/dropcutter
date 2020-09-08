@@ -170,6 +170,7 @@ fn main() -> Result<()> {
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
     println!("partition time{:?}", clock.elapsed());
+    /*
     let results: Vec<Vec<_>> = tests
         .iter()
         .enumerate()
@@ -181,6 +182,7 @@ fn main() -> Result<()> {
         })
         .collect();
     //bar.finish();
+    */
     let mut timer = std::rc::Rc::new(std::time::Duration::new(0,0));
     let results: Vec<Vec<_>> = tests
         .iter()
@@ -207,7 +209,7 @@ fn main() -> Result<()> {
         .collect();
     //bar.finish();
     println!("filter {:?}", timer);
-
+    
     // write out height map
     // TODO: add support for reading back in
     let encoded = bincode::serialize(&results).unwrap();
