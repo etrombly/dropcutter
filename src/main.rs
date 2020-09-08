@@ -158,32 +158,43 @@ fn main() -> Result<()> {
     // DEBUG: timer for triangle filtering
     // let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
     let columns: Vec<_> = tests
-    .iter()
-    .map(|test| {
-        // bounding box for this column
-        LineVk {
-            p1: PointVk::new(test[0][0] - radius, min_y as f32 / scale, 0.),
-            p2: PointVk::new(test[0][0] + radius, max_y as f32 / scale, 0.),
-        }
-    }).collect();
+        .iter()
+        .map(|test| {
+            // bounding box for this column
+            LineVk {
+                p1: PointVk::new(
+                    ((test[0][0] - radius) * 100.).round() / 100.,
+                    min_y as f32 / scale,
+                    0.,
+                ),
+                p2: PointVk::new(
+                    ((test[0][0] + radius) * 100.).round() / 100.,
+                    max_y as f32 / scale,
+                    0.,
+                ),
+            }
+        })
+        .collect();
 
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
     println!("partition time{:?}", clock.elapsed());
-    /*
+
+    println!("{:?} {:?}", partition[0].len(), tri_vk.len());
+
     let results: Vec<Vec<_>> = tests
         .iter()
         .enumerate()
         .map(|(column, test)| {
-            //bar.inc(1);
+            // bar.inc(1);
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
             compute_drop(&partition[column], &test, &vk).unwrap()
         })
         .collect();
-    //bar.finish();
-    */
-    let mut timer = std::rc::Rc::new(std::time::Duration::new(0,0));
+    // bar.finish();
+
+    let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
     let results: Vec<Vec<_>> = tests
         .iter()
         .map(|test| {
@@ -201,20 +212,20 @@ fn main() -> Result<()> {
                 .collect();
             let this_timer = std::rc::Rc::get_mut(&mut timer).unwrap();
             *this_timer += clock.elapsed();
-            //bar.inc(1);
+            bar.inc(1);
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
             compute_drop(&filtered, &test, &vk).unwrap()
         })
         .collect();
-    //bar.finish();
+    bar.finish();
     println!("filter {:?}", timer);
-    
+
     // write out height map
     // TODO: add support for reading back in
-    let encoded = bincode::serialize(&results).unwrap();
-    let mut file = File::create("out.map")?;
-    file.write_all(&encoded).unwrap();
+    // let encoded = bincode::serialize(&results).unwrap();
+    // let mut file = File::create("out.map")?;
+    // file.write_all(&encoded).unwrap();
 
     let columns = results.len();
     let rows = results[0].len();
