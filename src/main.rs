@@ -178,22 +178,22 @@ fn main() -> Result<()> {
 
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
-    println!("partition time{:?}", clock.elapsed());
+    println!("partition time {:?}", clock.elapsed());
 
-    println!("{:?} {:?}", partition[0].len(), tri_vk.len());
-
+    let clock = std::time::Instant::now();
     let results: Vec<Vec<_>> = tests
         .iter()
         .enumerate()
         .map(|(column, test)| {
-            // bar.inc(1);
+             bar.inc(1);
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
             compute_drop(&partition[column], &test, &vk).unwrap()
         })
         .collect();
-    // bar.finish();
-
+    bar.finish();
+    println!("drop time {:?}", clock.elapsed());
+    /*
     let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
     let results: Vec<Vec<_>> = tests
         .iter()
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
         .collect();
     bar.finish();
     println!("filter {:?}", timer);
-
+    */
     // write out height map
     // TODO: add support for reading back in
     // let encoded = bincode::serialize(&results).unwrap();
@@ -229,6 +229,7 @@ fn main() -> Result<()> {
 
     let columns = results.len();
     let rows = results[0].len();
+    let clock = std::time::Instant::now();
     // process height map with selected tool to find heights
     let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
         .into_par_iter()
@@ -269,6 +270,7 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
+        println!("tool time {:?}", clock.elapsed());
 
     // write out the height map to a point cloud for debugging
     let mut file = File::create("pcl.xyz")?;
