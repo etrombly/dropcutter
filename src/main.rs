@@ -195,18 +195,17 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    println!("[1/5] Filtering mesh");
-    let clock = std::time::Instant::now();
+    let bar = ProgressBar::new(1);
+    bar.set_style(ProgressStyle::default_bar().template("[1/5] Filtering mesh {bar:40.cyan/blue}"));
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
-    if opt.debug {
-        println!("partition time {:?}", clock.elapsed());
-    }
+    bar.set_style(
+        ProgressStyle::default_bar().template("[1/5] Filtering mesh elapsed: {elapsed_precise}"),
+    );
+    bar.finish();
 
-    let clock = std::time::Instant::now();
     let bar = ProgressBar::new(tests.len() as u64);
     bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[2/5] Computing height map {bar:40.cyan/blue} {eta}"),
+        ProgressStyle::default_bar().template("[2/5] Computing height map {bar:40.cyan/blue}"),
     );
     let results: Vec<Vec<_>> = match opt.heightmap {
         Some(file) => {
@@ -223,10 +222,11 @@ fn main() -> Result<()> {
         },
         _ => generate_heightmap(tests, partition, &bar, &vk),
     };
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[2/5] Computing height map elapsed: {elapsed_precise}"),
+    );
     bar.finish();
-    if opt.debug {
-        println!("drop time {:?}", clock.elapsed());
-    }
 
     if opt.debug {
         // write out height map
@@ -238,13 +238,11 @@ fn main() -> Result<()> {
 
     let columns = results.len();
     let rows = results[0].len();
-    let clock = std::time::Instant::now();
     // process height map with selected tool to find heights
     let count = columns / (radius * stepover * scale).ceil() as usize;
     let bar = ProgressBar::new(count as u64);
     bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[3/5] Processing tool path {bar:40.cyan/blue} {eta}"),
+        ProgressStyle::default_bar().template("[3/5] Processing tool path {bar:40.cyan/blue}"),
     );
     let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
         .into_par_iter()
@@ -286,10 +284,11 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[3/5] Processing tool path elapsed: {elapsed_precise}"),
+    );
     bar.finish();
-    if opt.debug {
-        println!("tool time {:?}", clock.elapsed());
-    }
 
     if opt.debug {
         // write out the height map to a point cloud for debugging
@@ -307,7 +306,6 @@ fn main() -> Result<()> {
         file.write_all(output.as_bytes())?;
     }
 
-    let clock = std::time::Instant::now();
     // start multi-pass processing
     let stepdown = match opt.stepdown {
         Some(x) => x,
@@ -316,7 +314,7 @@ fn main() -> Result<()> {
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
     let bar = ProgressBar::new(steps);
     bar.set_style(
-        ProgressStyle::default_bar().template("[4/5] Processing layers {bar:40.cyan/blue} {eta}"),
+        ProgressStyle::default_bar().template("[4/5] Processing layers {bar:40.cyan/blue}"),
     );
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
@@ -334,16 +332,15 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
+    bar.set_style(
+        ProgressStyle::default_bar().template("[4/5] Processing layers elapsed: {elapsed_precise}"),
+    );
     bar.finish();
-    if opt.debug {
-        println!("multi-pass processing {:?}", clock.elapsed());
-    }
 
     let bar = ProgressBar::new(points.len() as u64);
     bar.set_style(
-        ProgressStyle::default_bar().template("[5/5] Processing Gcode {bar:40.cyan/blue} {eta}"),
+        ProgressStyle::default_bar().template("[5/5] Processing Gcode {bar:40.cyan/blue}"),
     );
-    let clock = std::time::Instant::now();
     let mut file = File::create(opt.output)?;
     let mut last = processed[0][0];
     // start by moving to max Z
@@ -379,10 +376,10 @@ fn main() -> Result<()> {
             ));
         }
     }
+    bar.set_style(
+        ProgressStyle::default_bar().template("[5/5] Processing Gcode elapsed: {elapsed_precise}"),
+    );
     bar.finish();
     file.write_all(output.as_bytes())?;
-    if opt.debug {
-        println!("gcode processing {:?}", clock.elapsed());
-    }
     Ok(())
 }
