@@ -6,12 +6,12 @@ use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
-    io::{BufReader, Write},
+    io::{BufReader, Read, Write},
     path::PathBuf,
 };
 use structopt::StructOpt;
 
-// supported tool types
+/// supported tool types
 arg_enum! {
     #[derive(Debug)]
     enum ToolType {
@@ -70,6 +70,9 @@ struct Opt {
     #[structopt(short, long, parse(from_os_str))]
     output: PathBuf,
 
+    #[structopt(short, long, parse(from_os_str))]
+    heightmap: Option<PathBuf>,
+
     #[structopt(short, long)]
     diameter: f32,
 
@@ -90,6 +93,24 @@ struct Opt {
 
     #[structopt(short, long, possible_values = &ToolType::variants(), default_value="ball", case_insensitive = true)]
     tool: ToolType,
+}
+
+pub fn generate_heightmap(
+    tests: Vec<Vec<PointVk>>,
+    partition: Vec<Vec<TriangleVk>>,
+    bar: &ProgressBar,
+    vk: &Vk,
+) -> Vec<Vec<PointVk>> {
+    tests
+        .iter()
+        .enumerate()
+        .map(|(column, test)| {
+            // ray cast on the GPU to figure out the highest point for each point in this
+            // column
+            bar.inc(1);
+            compute_drop(&partition[column], &test, &vk).unwrap()
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
@@ -143,7 +164,7 @@ fn main() -> Result<()> {
     let max_y = (bounds.p2.y * scale) as i32;
     let min_y = (bounds.p1.y * scale) as i32;
 
-    // create the test points for the height map at .05mm resolution
+    // create the test points for the height map
     // TODO: add a spiral pattern
     let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
         .map(|x| {
@@ -183,18 +204,25 @@ fn main() -> Result<()> {
 
     let clock = std::time::Instant::now();
     let bar = ProgressBar::new(tests.len() as u64);
-    bar.set_style(ProgressStyle::default_bar()
-    .template("[2/5] Computing height map {bar:40.cyan/blue} {eta}"));
-    let results: Vec<Vec<_>> = tests
-        .iter()
-        .enumerate()
-        .map(|(column, test)| {
-            // ray cast on the GPU to figure out the highest point for each point in this
-            // column
-            bar.inc(1);
-            compute_drop(&partition[column], &test, &vk).unwrap()
-        })
-        .collect();
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[2/5] Computing height map {bar:40.cyan/blue} {eta}"),
+    );
+    let results: Vec<Vec<_>> = match opt.heightmap {
+        Some(file) => {
+            let mut file = File::open(file).unwrap();
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).unwrap();
+            let map: Vec<Vec<PointVk>> = bincode::deserialize(&buffer).unwrap();
+            if map.len() != tests.len() && map[0].len() != tests[0].len() {
+                println!("Input heightmap does not match stl or resolution, recomputing");
+                generate_heightmap(tests, partition, &bar, &vk)
+            } else {
+                map
+            }
+        },
+        _ => generate_heightmap(tests, partition, &bar, &vk),
+    };
     bar.finish();
     if opt.debug {
         println!("drop time {:?}", clock.elapsed());
@@ -214,8 +242,10 @@ fn main() -> Result<()> {
     // process height map with selected tool to find heights
     let count = columns / (radius * stepover * scale).ceil() as usize;
     let bar = ProgressBar::new(count as u64);
-    bar.set_style(ProgressStyle::default_bar()
-    .template("[3/5] Processing tool path {bar:40.cyan/blue} {eta}"));
+    bar.set_style(
+        ProgressStyle::default_bar()
+            .template("[3/5] Processing tool path {bar:40.cyan/blue} {eta}"),
+    );
     let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
         .into_par_iter()
         // space each column based on radius and stepover
@@ -285,8 +315,9 @@ fn main() -> Result<()> {
     };
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
     let bar = ProgressBar::new(steps);
-    bar.set_style(ProgressStyle::default_bar()
-    .template("[4/5] Processing layers {bar:40.cyan/blue} {eta}"));
+    bar.set_style(
+        ProgressStyle::default_bar().template("[4/5] Processing layers {bar:40.cyan/blue} {eta}"),
+    );
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
             bar.inc(1);
@@ -309,8 +340,9 @@ fn main() -> Result<()> {
     }
 
     let bar = ProgressBar::new(points.len() as u64);
-    bar.set_style(ProgressStyle::default_bar()
-    .template("[5/5] Processing Gcode {bar:40.cyan/blue} {eta}"));
+    bar.set_style(
+        ProgressStyle::default_bar().template("[5/5] Processing Gcode {bar:40.cyan/blue} {eta}"),
+    );
     let clock = std::time::Instant::now();
     let mut file = File::create(opt.output)?;
     let mut last = processed[0][0];

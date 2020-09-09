@@ -17,5 +17,5 @@ version = "0.15.0"
 features = ["rayon"]
 
 [dependencies.printer_geo]
-path = "../printer_geo"
-#git = "https://github.com/etrombly/printer_geo"
+#path = "../printer_geo"
+git = "https://github.com/etrombly/printer_geo"
