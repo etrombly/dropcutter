@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
@@ -73,6 +73,9 @@ struct Opt {
     #[structopt(short, long)]
     diameter: f32,
 
+    #[structopt(long)]
+    debug: bool,
+
     #[structopt(short, long, parse(try_from_str = parse_angle))]
     angle: Option<f32>,
 
@@ -110,9 +113,7 @@ fn main() -> Result<()> {
     let stepover = opt.diameter * (opt.stepover / 100.);
     let tool = opt.tool.create(radius, opt.angle, scale);
 
-    // TODO: remove writing out the tool to a file once it's working well (or add it
-    // as a debug option)
-    {
+    if opt.debug {
         let mut file = File::create("v_bit.xyz")?;
         let output = tool
             .points
@@ -152,11 +153,8 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    let bar = ProgressBar::new(tests.len() as u64);
     // create height map
 
-    // DEBUG: timer for triangle filtering
-    // let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
     let columns: Vec<_> = tests
         .iter()
         .map(|test| {
@@ -176,67 +174,55 @@ fn main() -> Result<()> {
         })
         .collect();
 
+    println!("[1/5] Filtering mesh");
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
-    println!("partition time {:?}", clock.elapsed());
+    if opt.debug {
+        println!("partition time {:?}", clock.elapsed());
+    }
 
     let clock = std::time::Instant::now();
+    let bar = ProgressBar::new(tests.len() as u64);
+    bar.set_style(ProgressStyle::default_bar()
+    .template("[2/5] Computing height map {bar:40.cyan/blue} {eta}"));
     let results: Vec<Vec<_>> = tests
         .iter()
         .enumerate()
         .map(|(column, test)| {
-             bar.inc(1);
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
+            bar.inc(1);
             compute_drop(&partition[column], &test, &vk).unwrap()
         })
         .collect();
     bar.finish();
-    println!("drop time {:?}", clock.elapsed());
-    /*
-    let mut timer = std::rc::Rc::new(std::time::Duration::new(0, 0));
-    let results: Vec<Vec<_>> = tests
-        .iter()
-        .map(|test| {
-            // bounding box for this column
-            let bounds = LineVk {
-                p1: PointVk::new(test[0][0] - radius, min_y as f32 / scale, 0.),
-                p2: PointVk::new(test[0][0] + radius, max_y as f32 / scale, 0.),
-            };
-            // filter out triangles that aren't contained in or intersect this column
-            let clock = std::time::Instant::now();
-            let filtered: Vec<_> = tri_vk
-                .par_iter()
-                .copied()
-                .filter(|tri| tri.filter_row(bounds))
-                .collect();
-            let this_timer = std::rc::Rc::get_mut(&mut timer).unwrap();
-            *this_timer += clock.elapsed();
-            bar.inc(1);
-            // ray cast on the GPU to figure out the highest point for each point in this
-            // column
-            compute_drop(&filtered, &test, &vk).unwrap()
-        })
-        .collect();
-    bar.finish();
-    println!("filter {:?}", timer);
-    */
-    // write out height map
-    // TODO: add support for reading back in
-    // let encoded = bincode::serialize(&results).unwrap();
-    // let mut file = File::create("out.map")?;
-    // file.write_all(&encoded).unwrap();
+    if opt.debug {
+        println!("drop time {:?}", clock.elapsed());
+    }
+
+    if opt.debug {
+        // write out height map
+        // TODO: add support for reading back in
+        let encoded = bincode::serialize(&results).unwrap();
+        let mut file = File::create("out.map")?;
+        file.write_all(&encoded).unwrap();
+    }
 
     let columns = results.len();
     let rows = results[0].len();
     let clock = std::time::Instant::now();
     // process height map with selected tool to find heights
+    let count = columns / (radius * stepover * scale).ceil() as usize;
+    let bar = ProgressBar::new(count as u64);
+    bar.set_style(ProgressStyle::default_bar()
+    .template("[3/5] Processing tool path {bar:40.cyan/blue} {eta}"));
     let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
         .into_par_iter()
         // space each column based on radius and stepover
         .step_by((radius * stepover * scale).ceil() as usize)
         .enumerate()
         .map(|(column_num, x)| {
+            bar.inc(1);
             // alternate direction for each column, have to collect into a vec to get types to match
             let steps = if column_num % 2 == 0 {
                 ((radius * scale) as usize..rows).collect::<Vec<_>>().into_par_iter()
@@ -270,30 +256,40 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
+    bar.finish();
+    if opt.debug {
         println!("tool time {:?}", clock.elapsed());
+    }
 
-    // write out the height map to a point cloud for debugging
-    let mut file = File::create("pcl.xyz")?;
+    if opt.debug {
+        // write out the height map to a point cloud for debugging
+        let mut file = File::create("pcl.xyz")?;
 
-    let output = results
-        .iter()
-        .flat_map(|column| {
-            column
-                .iter()
-                .map(|point| format!("{:.3} {:.3} {:.3}\n", point[0], point[1], point[2]))
-        })
-        .collect::<Vec<String>>()
-        .join("");
-    file.write_all(output.as_bytes())?;
+        let output = results
+            .iter()
+            .flat_map(|column| {
+                column
+                    .iter()
+                    .map(|point| format!("{:.3} {:.3} {:.3}\n", point[0], point[1], point[2]))
+            })
+            .collect::<Vec<String>>()
+            .join("");
+        file.write_all(output.as_bytes())?;
+    }
 
+    let clock = std::time::Instant::now();
     // start multi-pass processing
     let stepdown = match opt.stepdown {
         Some(x) => x,
         None => bounds.p2.z - bounds.p1.z,
     };
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
+    let bar = ProgressBar::new(steps);
+    bar.set_style(ProgressStyle::default_bar()
+    .template("[4/5] Processing layers {bar:40.cyan/blue} {eta}"));
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
+            bar.inc(1);
             processed
                 .iter()
                 .map(|row| {
@@ -307,7 +303,15 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
+    bar.finish();
+    if opt.debug {
+        println!("multi-pass processing {:?}", clock.elapsed());
+    }
 
+    let bar = ProgressBar::new(points.len() as u64);
+    bar.set_style(ProgressStyle::default_bar()
+    .template("[5/5] Processing Gcode {bar:40.cyan/blue} {eta}"));
+    let clock = std::time::Instant::now();
     let mut file = File::create(opt.output)?;
     let mut last = processed[0][0];
     // start by moving to max Z
@@ -316,6 +320,7 @@ fn main() -> Result<()> {
     let mut output = format!("G1 Z{:.2} F300\n", bounds.p2.z);
 
     for layer in points {
+        bar.inc(1);
         output.push_str(&format!(
             "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
             layer[0][0][0], layer[0][0][1], layer[0][0][2]
@@ -342,6 +347,10 @@ fn main() -> Result<()> {
             ));
         }
     }
+    bar.finish();
     file.write_all(output.as_bytes())?;
+    if opt.debug {
+        println!("gcode processing {:?}", clock.elapsed());
+    }
     Ok(())
 }
