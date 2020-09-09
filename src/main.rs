@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, MultiProgress, ProgressDrawTarget, TickTimeLimit};
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
@@ -10,6 +10,8 @@ use std::{
     path::PathBuf,
 };
 use structopt::StructOpt;
+use std::time::Duration;
+use std::thread;
 
 /// supported tool types
 arg_enum! {
@@ -99,6 +101,7 @@ pub fn generate_heightmap(
     tests: Vec<Vec<PointVk>>,
     partition: Vec<Vec<TriangleVk>>,
     bar: &ProgressBar,
+    total_bar: &ProgressBar,
     vk: &Vk,
 ) -> Vec<Vec<PointVk>> {
     tests
@@ -108,6 +111,7 @@ pub fn generate_heightmap(
             // ray cast on the GPU to figure out the highest point for each point in this
             // column
             bar.inc(1);
+            total_bar.tick();
             compute_drop(&partition[column], &test, &vk).unwrap()
         })
         .collect()
@@ -116,6 +120,43 @@ pub fn generate_heightmap(
 fn main() -> Result<()> {
     // parse input args, may remove this once I build the GUI
     let opt = Opt::from_args();
+
+    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_nohz());
+    let partition_bar = mp.add(ProgressBar::new(0));
+    partition_bar.set_style(ProgressStyle::default_bar().template("[1/5] Filtering mesh"));
+    partition_bar.tick();
+    let height_bar = mp.add(ProgressBar::new(0));
+    height_bar.set_style(
+        ProgressStyle::default_bar().template("[2/5] Computing height map"),
+    );
+    height_bar.tick();
+    let tool_bar = mp.add(ProgressBar::new(0));
+    tool_bar.set_style(
+        ProgressStyle::default_bar().template("[3/5] Processing tool path"),
+    );
+    tool_bar.tick();
+    let layer_bar = mp.add(ProgressBar::new(0));
+    layer_bar.set_style(
+        ProgressStyle::default_bar().template("[4/5] Processing layers"),
+    );
+    layer_bar.tick();
+    let gcode_bar = mp.add(ProgressBar::new(0));
+    gcode_bar.set_style(
+        ProgressStyle::default_bar().template("[5/5] Processing Gcode"),
+    );
+    gcode_bar.tick();
+    let total_bar = mp.add(ProgressBar::new(0));
+    total_bar.set_style(
+        ProgressStyle::default_bar().template("Total elapsed: {elapsed_precise}"),
+    );
+    total_bar.tick();
+
+    let _ = thread::spawn(move || {
+        loop {
+            mp.tick(TickTimeLimit::Indefinite).unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
 
     let scale = 1. / opt.resolution;
 
@@ -195,18 +236,23 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    let bar = ProgressBar::new(1);
-    bar.set_style(ProgressStyle::default_bar().template("[1/5] Filtering mesh {bar:40.cyan/blue}"));
+    let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
-    bar.set_style(
-        ProgressStyle::default_bar().template("[1/5] Filtering mesh elapsed: {elapsed_precise}"),
+    partition_bar.set_style(
+        ProgressStyle::default_bar().template("[1/5] Filtering mesh elapsed: {elapsed}"),
     );
-    bar.finish();
+    partition_bar.finish();
+    total_bar.tick();
+    if opt.debug {
+        println!("partition time {:?}", clock.elapsed());
+    }
 
-    let bar = ProgressBar::new(tests.len() as u64);
-    bar.set_style(
+    let clock = std::time::Instant::now();
+    height_bar.set_length(tests.len() as u64);
+    height_bar.set_style(
         ProgressStyle::default_bar().template("[2/5] Computing height map {bar:40.cyan/blue}"),
     );
+    height_bar.reset_elapsed();
     let results: Vec<Vec<_>> = match opt.heightmap {
         Some(file) => {
             let mut file = File::open(file).unwrap();
@@ -215,20 +261,23 @@ fn main() -> Result<()> {
             let map: Vec<Vec<PointVk>> = bincode::deserialize(&buffer).unwrap();
             if map.len() != tests.len() && map[0].len() != tests[0].len() {
                 println!("Input heightmap does not match stl or resolution, recomputing");
-                generate_heightmap(tests, partition, &bar, &vk)
+                generate_heightmap(tests, partition, &height_bar, &total_bar, &vk)
             } else {
                 map
             }
         },
-        _ => generate_heightmap(tests, partition, &bar, &vk),
+        _ => generate_heightmap(tests, partition, &height_bar, &total_bar, &vk),
     };
-    bar.set_style(
+    height_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[2/5] Computing height map elapsed: {elapsed_precise}"),
+            .template("[2/5] Computing height map elapsed: {elapsed}"),
     );
-    bar.finish();
-
+    height_bar.finish();
     if opt.debug {
+        println!("drop time {:?}", clock.elapsed());
+    }
+
+    {
         // write out height map
         // TODO: add support for reading back in
         let encoded = bincode::serialize(&results).unwrap();
@@ -236,12 +285,14 @@ fn main() -> Result<()> {
         file.write_all(&encoded).unwrap();
     }
 
+    let clock = std::time::Instant::now();
     let columns = results.len();
     let rows = results[0].len();
     // process height map with selected tool to find heights
     let count = columns / (radius * stepover * scale).ceil() as usize;
-    let bar = ProgressBar::new(count as u64);
-    bar.set_style(
+    tool_bar.set_length(count as u64);
+    tool_bar.reset_elapsed();
+    tool_bar.set_style(
         ProgressStyle::default_bar().template("[3/5] Processing tool path {bar:40.cyan/blue}"),
     );
     let processed: Vec<Vec<_>> = ((radius * scale) as usize..columns)
@@ -250,7 +301,8 @@ fn main() -> Result<()> {
         .step_by((radius * stepover * scale).ceil() as usize)
         .enumerate()
         .map(|(column_num, x)| {
-            bar.inc(1);
+            tool_bar.inc(1);
+            total_bar.tick();
             // alternate direction for each column, have to collect into a vec to get types to match
             let steps = if column_num % 2 == 0 {
                 ((radius * scale) as usize..rows).collect::<Vec<_>>().into_par_iter()
@@ -284,11 +336,14 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
-    bar.set_style(
+    tool_bar.set_style(
         ProgressStyle::default_bar()
-            .template("[3/5] Processing tool path elapsed: {elapsed_precise}"),
+            .template("[3/5] Processing tool path elapsed: {elapsed}"),
     );
-    bar.finish();
+    tool_bar.finish();
+    if opt.debug {
+        println!("tool time {:?}", clock.elapsed());
+    }
 
     if opt.debug {
         // write out the height map to a point cloud for debugging
@@ -306,19 +361,22 @@ fn main() -> Result<()> {
         file.write_all(output.as_bytes())?;
     }
 
+    let clock = std::time::Instant::now();
     // start multi-pass processing
     let stepdown = match opt.stepdown {
         Some(x) => x,
         None => bounds.p2.z - bounds.p1.z,
     };
     let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
-    let bar = ProgressBar::new(steps);
-    bar.set_style(
+    layer_bar.set_length(steps);
+    layer_bar.reset_elapsed();
+    layer_bar.set_style(
         ProgressStyle::default_bar().template("[4/5] Processing layers {bar:40.cyan/blue}"),
     );
     let points: Vec<Vec<Vec<_>>> = (1..steps + 1)
         .map(|step| {
-            bar.inc(1);
+            layer_bar.inc(1);
+            total_bar.tick();
             processed
                 .iter()
                 .map(|row| {
@@ -332,13 +390,18 @@ fn main() -> Result<()> {
                 .collect()
         })
         .collect();
-    bar.set_style(
-        ProgressStyle::default_bar().template("[4/5] Processing layers elapsed: {elapsed_precise}"),
+    layer_bar.set_style(
+        ProgressStyle::default_bar().template("[4/5] Processing layers elapsed: {elapsed}"),
     );
-    bar.finish();
+    layer_bar.finish();
+    if opt.debug {
+        println!("multi-pass processing {:?}", clock.elapsed());
+    }
 
-    let bar = ProgressBar::new(points.len() as u64);
-    bar.set_style(
+    let clock = std::time::Instant::now();
+    gcode_bar.set_length(points.len() as u64);
+    gcode_bar.reset_elapsed();
+    gcode_bar.set_style(
         ProgressStyle::default_bar().template("[5/5] Processing Gcode {bar:40.cyan/blue}"),
     );
     let mut file = File::create(opt.output)?;
@@ -349,7 +412,8 @@ fn main() -> Result<()> {
     let mut output = format!("G1 Z{:.2} F300\n", bounds.p2.z);
 
     for layer in points {
-        bar.inc(1);
+        gcode_bar.inc(1);
+        total_bar.tick();
         output.push_str(&format!(
             "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
             layer[0][0][0], layer[0][0][1], layer[0][0][2]
@@ -376,10 +440,14 @@ fn main() -> Result<()> {
             ));
         }
     }
-    bar.set_style(
-        ProgressStyle::default_bar().template("[5/5] Processing Gcode elapsed: {elapsed_precise}"),
+    gcode_bar.set_style(
+        ProgressStyle::default_bar().template("[5/5] Processing Gcode elapsed: {elapsed}"),
     );
-    bar.finish();
+    gcode_bar.finish();
+    if opt.debug {
+        println!("gcode processing {:?}", clock.elapsed());
+    }
+    total_bar.finish();
     file.write_all(output.as_bytes())?;
     Ok(())
 }
