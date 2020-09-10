@@ -19,5 +19,11 @@ branch = "mpb-tick"
 features = ["rayon"]
 
 [dependencies.printer_geo]
-#path = "../printer_geo"
-git = "https://github.com/etrombly/printer_geo"
+path = "../printer_geo"
+#git = "https://github.com/etrombly/printer_geo"
+
+[profile.release]
+lto=true
+
+[profile.bench]
+lto=true

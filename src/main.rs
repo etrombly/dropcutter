@@ -1,19 +1,18 @@
 use anyhow::{anyhow, Result};
 use clap::arg_enum;
 use float_cmp::approx_eq;
-use indicatif::{ProgressBar, ProgressStyle, MultiProgress, ProgressDrawTarget, TickTimeLimit};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
 use printer_geo::{compute::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
-    io::{BufReader, Read, Write},
+    io::{Read, Write},
     path::PathBuf,
+    thread,
+    time::Duration,
 };
 use structopt::StructOpt;
-use std::time::Duration;
-use std::thread;
 
-/// supported tool types
 arg_enum! {
     #[derive(Debug)]
     enum ToolType {
@@ -126,46 +125,31 @@ fn main() -> Result<()> {
     partition_bar.set_style(ProgressStyle::default_bar().template("[1/5] Filtering mesh"));
     partition_bar.tick();
     let height_bar = mp.add(ProgressBar::new(0));
-    height_bar.set_style(
-        ProgressStyle::default_bar().template("[2/5] Computing height map"),
-    );
+    height_bar.set_style(ProgressStyle::default_bar().template("[2/5] Computing height map"));
     height_bar.tick();
     let tool_bar = mp.add(ProgressBar::new(0));
-    tool_bar.set_style(
-        ProgressStyle::default_bar().template("[3/5] Processing tool path"),
-    );
+    tool_bar.set_style(ProgressStyle::default_bar().template("[3/5] Processing tool path"));
     tool_bar.tick();
     let layer_bar = mp.add(ProgressBar::new(0));
-    layer_bar.set_style(
-        ProgressStyle::default_bar().template("[4/5] Processing layers"),
-    );
+    layer_bar.set_style(ProgressStyle::default_bar().template("[4/5] Processing layers"));
     layer_bar.tick();
     let gcode_bar = mp.add(ProgressBar::new(0));
-    gcode_bar.set_style(
-        ProgressStyle::default_bar().template("[5/5] Processing Gcode"),
-    );
+    gcode_bar.set_style(ProgressStyle::default_bar().template("[5/5] Processing Gcode"));
     gcode_bar.tick();
     let total_bar = mp.add(ProgressBar::new(0));
-    total_bar.set_style(
-        ProgressStyle::default_bar().template("Total elapsed: {elapsed_precise}"),
-    );
+    total_bar.set_style(ProgressStyle::default_bar().template("Total elapsed: {elapsed_precise}"));
     total_bar.tick();
 
-    let _ = thread::spawn(move || {
-        loop {
-            mp.tick(TickTimeLimit::Indefinite).unwrap();
-            thread::sleep(Duration::from_millis(10));
-        }
+    let _ = thread::spawn(move || loop {
+        mp.tick(TickTimeLimit::Indefinite).unwrap();
+        thread::sleep(Duration::from_millis(10));
     });
 
     let scale = 1. / opt.resolution;
 
     // open stl
     // TODO: give a nicer error if this isn't a valid stl
-    let file = File::open(opt.input)?;
-    let mut buf_reader = BufReader::new(file);
-    let stl = read_stl(&mut buf_reader).unwrap();
-    let mut triangles = to_triangles3d(&stl);
+    let mut triangles = stl_to_tri(&opt.input)?;
 
     // initialize vulkan
     let vk = Vk::new()?;
@@ -196,7 +180,7 @@ fn main() -> Result<()> {
     let bounds = get_bounds(&triangles);
 
     // trnaslate triangles to a vulkan friendly format
-    let tri_vk = to_tri_vk(&triangles);
+    let tri_vk: Vec<TriangleVk> = to_tri_vk(&triangles);
 
     // can't step by floats in rust, so need to scale up
     // TODO: scaling by 20 gives .05mm precision, is that good enough?
@@ -269,8 +253,7 @@ fn main() -> Result<()> {
         _ => generate_heightmap(tests, partition, &height_bar, &total_bar, &vk),
     };
     height_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[2/5] Computing height map elapsed: {elapsed}"),
+        ProgressStyle::default_bar().template("[2/5] Computing height map elapsed: {elapsed}"),
     );
     height_bar.finish();
     if opt.debug {
@@ -330,15 +313,14 @@ fn main() -> Result<()> {
                                 bounds.p1.z
                             }
                         })
-                        .fold(0. / 0., f32::max); // same as calling max on all the values for this tool to find the heighest
+                        .fold(f32::NAN, f32::max); // same as calling max on all the values for this tool to find the heighest
                     PointVk::new(x as f32 / scale, y as f32 / scale, max)
                 })
                 .collect()
         })
         .collect();
     tool_bar.set_style(
-        ProgressStyle::default_bar()
-            .template("[3/5] Processing tool path elapsed: {elapsed}"),
+        ProgressStyle::default_bar().template("[3/5] Processing tool path elapsed: {elapsed}"),
     );
     tool_bar.finish();
     if opt.debug {
