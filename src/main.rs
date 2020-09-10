@@ -111,7 +111,7 @@ pub fn generate_heightmap(
             // column
             bar.inc(1);
             total_bar.tick();
-            compute_drop(&partition[column], &test, &vk).unwrap()
+            intersect_tris(&partition[column], &test, &vk).unwrap()
         })
         .collect()
 }
@@ -170,20 +170,15 @@ fn main() -> Result<()> {
         file.write_all(output.as_bytes())?;
     }
 
-    // get the bounds for the model
-    let bounds = get_bounds(&triangles);
     // shift the model lower edge to x: 0 y: 0 and z_max to 0
-    triangles
-        .par_iter_mut()
-        .for_each(|tri| tri.translate(-bounds.p1.x, -bounds.p1.y, -bounds.p2.z));
-    // get new bounds
+    move_to_zero(&mut triangles);
+    // get bounds for the model
     let bounds = get_bounds(&triangles);
 
     // trnaslate triangles to a vulkan friendly format
     let tri_vk: Vec<TriangleVk> = to_tri_vk(&triangles);
 
     // can't step by floats in rust, so need to scale up
-    // TODO: scaling by 20 gives .05mm precision, is that good enough?
     let max_x = (bounds.p2.x * scale) as i32;
     let min_x = (bounds.p1.x * scale) as i32;
     let max_y = (bounds.p2.y * scale) as i32;
@@ -200,7 +195,6 @@ fn main() -> Result<()> {
         .collect();
 
     // create height map
-
     let columns: Vec<_> = tests
         .iter()
         .map(|test| {
