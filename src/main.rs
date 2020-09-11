@@ -1,100 +1,16 @@
 use anyhow::{anyhow, Result};
-use clap::arg_enum;
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{compute::*, geo::*, stl::*};
+use printer_geo::{compute::*, config::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
     io::{Read, Write},
-    path::PathBuf,
+    sync::Arc,
     thread,
     time::Duration,
 };
 use structopt::StructOpt;
-
-arg_enum! {
-    #[derive(Debug)]
-    enum ToolType {
-        Endmill,
-        VBit,
-        Ball
-    }
-}
-
-impl ToolType {
-    pub fn create(&self, radius: f32, angle: Option<f32>, scale: f32) -> Tool {
-        match self {
-            ToolType::Endmill => Tool::new_endmill(radius, scale),
-            ToolType::VBit => {
-                Tool::new_v_bit(radius, angle.expect("V-Bit requires tool angle"), scale)
-            },
-            ToolType::Ball => Tool::new_ball(radius, scale),
-        }
-    }
-}
-
-fn parse_stepover(src: &str) -> Result<f32> {
-    let stepover = src.parse::<f32>()?;
-    if stepover < 1. || stepover > 100. {
-        Err(anyhow!("stepover must be between 1 and 100"))
-    } else {
-        Ok(stepover)
-    }
-}
-
-fn parse_angle(src: &str) -> Result<f32> {
-    let angle = src.parse::<f32>()?;
-    if angle < 1. || angle > 180. {
-        Err(anyhow!("angle must be between 1 and 180"))
-    } else {
-        Ok(angle)
-    }
-}
-
-fn parse_resolution(src: &str) -> Result<f32> {
-    let resolution = src.parse::<f32>()?;
-    if resolution < 0.001 || resolution > 1. {
-        Err(anyhow!("resolution must be between 0.001 and 1.0"))
-    } else {
-        Ok(resolution)
-    }
-}
-
-// set up program arguments
-#[derive(Debug, StructOpt)]
-#[structopt(name = "Dropcutter")]
-struct Opt {
-    #[structopt(short, long, parse(from_os_str))]
-    input: PathBuf,
-
-    #[structopt(short, long, parse(from_os_str))]
-    output: PathBuf,
-
-    #[structopt(short, long, parse(from_os_str))]
-    heightmap: Option<PathBuf>,
-
-    #[structopt(short, long)]
-    diameter: f32,
-
-    #[structopt(long)]
-    debug: bool,
-
-    #[structopt(short, long, parse(try_from_str = parse_angle))]
-    angle: Option<f32>,
-
-    #[structopt(long, default_value="100", parse(try_from_str = parse_stepover))]
-    stepover: f32,
-
-    #[structopt(short, long, default_value="0.05", parse(try_from_str = parse_resolution))]
-    resolution: f32,
-
-    #[structopt(short, long)]
-    stepdown: Option<f32>,
-
-    #[structopt(short, long, possible_values = &ToolType::variants(), default_value="ball", case_insensitive = true)]
-    tool: ToolType,
-}
 
 pub fn generate_heightmap(
     tests: Vec<Vec<PointVk>>,
@@ -120,7 +36,9 @@ fn main() -> Result<()> {
     // parse input args, may remove this once I build the GUI
     let opt = Opt::from_args();
 
-    let mp = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_nohz());
+    let mp = Arc::new(MultiProgress::with_draw_target(
+        ProgressDrawTarget::stderr_nohz(),
+    ));
     let partition_bar = mp.add(ProgressBar::new(0));
     partition_bar.set_style(ProgressStyle::default_bar().template("[1/5] Filtering mesh"));
     partition_bar.tick();
@@ -140,8 +58,9 @@ fn main() -> Result<()> {
     total_bar.set_style(ProgressStyle::default_bar().template("Total elapsed: {elapsed_precise}"));
     total_bar.tick();
 
+    let mp_child = mp.clone();
     let _ = thread::spawn(move || loop {
-        mp.tick(TickTimeLimit::Indefinite).unwrap();
+        mp_child.tick(TickTimeLimit::Indefinite).unwrap();
         thread::sleep(Duration::from_millis(10));
     });
 
@@ -178,41 +97,12 @@ fn main() -> Result<()> {
     // trnaslate triangles to a vulkan friendly format
     let tri_vk: Vec<TriangleVk> = to_tri_vk(&triangles);
 
-    // can't step by floats in rust, so need to scale up
-    let max_x = (bounds.p2.x * scale) as i32;
-    let min_x = (bounds.p1.x * scale) as i32;
-    let max_y = (bounds.p2.y * scale) as i32;
-    let min_y = (bounds.p1.y * scale) as i32;
-
     // create the test points for the height map
-    // TODO: add a spiral pattern
-    let tests: Vec<Vec<PointVk>> = (min_x..=max_x)
-        .map(|x| {
-            (min_y..=max_y)
-                .map(move |y| PointVk::new(x as f32 / scale, y as f32 / scale, bounds.p1.z))
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let grid = generate_grid(&bounds, &scale);
 
-    // create height map
-    let columns: Vec<_> = tests
-        .iter()
-        .map(|test| {
-            // bounding box for this column
-            LineVk {
-                p1: PointVk::new(
-                    ((test[0][0] - radius) * 100.).round() / 100.,
-                    min_y as f32 / scale,
-                    0.,
-                ),
-                p2: PointVk::new(
-                    ((test[0][0] + radius) * 100.).round() / 100.,
-                    max_y as f32 / scale,
-                    0.,
-                ),
-            }
-        })
-        .collect();
+    // create columns
+    // TODO: add a spiral pattern
+    let columns = generate_columns(&grid, &bounds, &opt.resolution, &scale);
 
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
@@ -226,25 +116,25 @@ fn main() -> Result<()> {
     }
 
     let clock = std::time::Instant::now();
-    height_bar.set_length(tests.len() as u64);
+    height_bar.set_length(grid.len() as u64);
     height_bar.set_style(
         ProgressStyle::default_bar().template("[2/5] Computing height map {bar:40.cyan/blue}"),
     );
     height_bar.reset_elapsed();
-    let results: Vec<Vec<_>> = match opt.heightmap {
+    let heightmap: Vec<Vec<_>> = match opt.heightmap {
         Some(file) => {
             let mut file = File::open(file).unwrap();
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer).unwrap();
             let map: Vec<Vec<PointVk>> = bincode::deserialize(&buffer).unwrap();
-            if map.len() != tests.len() && map[0].len() != tests[0].len() {
+            if map.len() != grid.len() && map[0].len() != grid[0].len() {
                 println!("Input heightmap does not match stl or resolution, recomputing");
-                generate_heightmap(tests, partition, &height_bar, &total_bar, &vk)
+                generate_heightmap(grid, partition, &height_bar, &total_bar, &vk)
             } else {
                 map
             }
         },
-        _ => generate_heightmap(tests, partition, &height_bar, &total_bar, &vk),
+        _ => generate_heightmap(grid, partition, &height_bar, &total_bar, &vk),
     };
     height_bar.set_style(
         ProgressStyle::default_bar().template("[2/5] Computing height map elapsed: {elapsed}"),
@@ -257,14 +147,14 @@ fn main() -> Result<()> {
     {
         // write out height map
         // TODO: add support for reading back in
-        let encoded = bincode::serialize(&results).unwrap();
+        let encoded = bincode::serialize(&heightmap).unwrap();
         let mut file = File::create("out.map")?;
         file.write_all(&encoded).unwrap();
     }
 
     let clock = std::time::Instant::now();
-    let columns = results.len();
-    let rows = results[0].len();
+    let columns = heightmap.len();
+    let rows = heightmap[0].len();
     // process height map with selected tool to find heights
     let count = columns / (radius * stepover * scale).ceil() as usize;
     tool_bar.set_length(count as u64);
@@ -301,7 +191,7 @@ fn main() -> Result<()> {
                                 && y_offset >= 0
                             {
 
-                                results[x_offset as usize][y_offset as usize][2]
+                                heightmap[x_offset as usize][y_offset as usize][2]
                                     - tpoint[2]
                             } else {
                                 bounds.p1.z
@@ -325,7 +215,7 @@ fn main() -> Result<()> {
         // write out the height map to a point cloud for debugging
         let mut file = File::create("pcl.xyz")?;
 
-        let output = results
+        let output = heightmap
             .iter()
             .flat_map(|column| {
                 column
@@ -424,6 +314,7 @@ fn main() -> Result<()> {
         println!("gcode processing {:?}", clock.elapsed());
     }
     total_bar.finish();
+    mp.join()?;
     file.write_all(output.as_bytes())?;
     Ok(())
 }
