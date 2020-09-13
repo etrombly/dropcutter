@@ -19,17 +19,26 @@ pub fn generate_heightmap(
     total_bar: &ProgressBar,
     vk: &Vk,
 ) -> Vec<Vec<PointVk>> {
-    tests
-        .iter()
-        .enumerate()
-        .map(|(column, test)| {
-            // ray cast on the GPU to figure out the highest point for each point in this
-            // column
-            bar.inc(1);
-            total_bar.tick();
-            intersect_tris(&partition[column], &test, &vk).unwrap()
-        })
-        .collect()
+    let mut result = Vec::with_capacity(tests.len());
+    for (column, test) in tests.chunks(10).enumerate() {
+        // ray cast on the GPU to figure out the highest point for each point in this
+        // column
+        bar.inc(1);
+        // TODO: there's probably a better way to process this in chunks
+        total_bar.tick();
+        let len = test[0].len();
+        let tris = intersect_tris(
+            &partition[column],
+            &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
+            &vk,
+        )
+        .unwrap();
+        //intersect_tris_fallback(&partition[column], &test)
+        for chunk in tris.chunks(len) {
+            result.push(chunk.to_vec());
+        }
+    }
+    result
 }
 
 fn main() -> Result<()> {
@@ -102,7 +111,7 @@ fn main() -> Result<()> {
 
     // create columns
     // TODO: add a spiral pattern
-    let columns = generate_columns(&grid, &bounds, &opt.resolution, &scale);
+    let columns = generate_columns_chunks(&grid, &bounds, &opt.resolution, &scale);
 
     let clock = std::time::Instant::now();
     let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
@@ -116,7 +125,7 @@ fn main() -> Result<()> {
     }
 
     let clock = std::time::Instant::now();
-    height_bar.set_length(grid.len() as u64);
+    height_bar.set_length(grid.len() as u64 / 10);
     height_bar.set_style(
         ProgressStyle::default_bar().template("[2/5] Computing height map {bar:40.cyan/blue}"),
     );
