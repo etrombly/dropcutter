@@ -12,6 +12,7 @@ use std::{
 };
 use structopt::StructOpt;
 
+/*
 pub fn generate_heightmap(
     tests: Vec<Vec<PointVk>>,
     partition: Vec<Vec<TriangleVk>>,
@@ -39,7 +40,7 @@ pub fn generate_heightmap(
         }
     }
     result
-}
+}*/
 
 fn main() -> Result<()> {
     // parse input args, may remove this once I build the GUI
@@ -81,6 +82,10 @@ fn main() -> Result<()> {
 
     // initialize vulkan
     let vk = Vk::new()?;
+
+    heightmap(&triangles, &vk);
+    return Ok(());
+    /*
 
     // TODO: add support for multiple passes with different tools?
     let radius = opt.diameter / 2.;
@@ -325,5 +330,6 @@ fn main() -> Result<()> {
     total_bar.finish();
     mp.join()?;
     file.write_all(output.as_bytes())?;
+    */
     Ok(())
 }
