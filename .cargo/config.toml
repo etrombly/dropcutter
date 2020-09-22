@@ -1,5 +1,5 @@
 [build]
-rustflags = "-C target-feature=+sse"
+rustflags = "-C target-cpu=native"
 
 [source.crates-io]
 replace-with = "vendored-sources"

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{compute::*, config::*, geo::*, stl::*};
+use printer_geo::{bfs::*, compute::*, config::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -13,12 +13,12 @@ use std::{
 use structopt::StructOpt;
 
 pub fn generate_heightmap(
-    tests: Vec<Vec<PointVk>>,
-    partition: Vec<Vec<TriangleVk>>,
+    tests: Vec<Vec<Point3d>>,
+    partition: Vec<Vec<Triangle3d>>,
     bar: &ProgressBar,
     total_bar: &ProgressBar,
     vk: &Vk,
-) -> Vec<Vec<PointVk>> {
+) -> Vec<Vec<Point3d>> {
     let mut result = Vec::with_capacity(tests.len());
     for (column, test) in tests.chunks(10).enumerate() {
         // ray cast on the GPU to figure out the highest point for each point in this
@@ -88,11 +88,11 @@ fn main() -> Result<()> {
     let tool = opt.tool.create(radius, opt.angle, scale);
 
     if opt.debug {
-        let mut file = File::create("v_bit.xyz")?;
+        let mut file = File::create("tool.xyz")?;
         let output = tool
             .points
             .iter()
-            .map(|x| format!("{:.3} {:.3} {:.3}\n", x[0], x[1], x[2]))
+            .map(|x| format!("{:.3} {:.3} {:.3}\n", x.pos.x, x.pos.y, x.pos.z))
             .collect::<Vec<String>>()
             .join("");
         file.write_all(output.as_bytes())?;
@@ -103,9 +103,6 @@ fn main() -> Result<()> {
     // get bounds for the model
     let bounds = get_bounds(&triangles);
 
-    // trnaslate triangles to a vulkan friendly format
-    let tri_vk: Vec<TriangleVk> = to_tri_vk(&triangles);
-
     // create the test points for the height map
     let grid = generate_grid(&bounds, &scale);
 
@@ -114,7 +111,7 @@ fn main() -> Result<()> {
     let columns = generate_columns_chunks(&grid, &bounds, &opt.resolution, &scale);
 
     let clock = std::time::Instant::now();
-    let partition = partition_tris(&tri_vk, &columns, &vk).unwrap();
+    let partition = partition_tris(&triangles, &columns, &vk).unwrap();
     partition_bar.set_style(
         ProgressStyle::default_bar().template("[1/5] Filtering mesh elapsed: {elapsed}"),
     );
@@ -135,7 +132,7 @@ fn main() -> Result<()> {
             let mut file = File::open(file).unwrap();
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer).unwrap();
-            let map: Vec<Vec<PointVk>> = bincode::deserialize(&buffer).unwrap();
+            let map: Vec<Vec<Point3d>> = bincode::deserialize(&buffer).unwrap();
             if map.len() != grid.len() && map[0].len() != grid[0].len() {
                 println!("Input heightmap does not match stl or resolution, recomputing");
                 generate_heightmap(grid, partition, &height_bar, &total_bar, &vk)
@@ -145,6 +142,7 @@ fn main() -> Result<()> {
         },
         _ => generate_heightmap(grid, partition, &height_bar, &total_bar, &vk),
     };
+
     height_bar.set_style(
         ProgressStyle::default_bar().template("[2/5] Computing height map elapsed: {elapsed}"),
     );
@@ -175,16 +173,18 @@ fn main() -> Result<()> {
         .into_par_iter()
         // space each column based on radius and stepover
         .step_by((radius * stepover * scale).ceil() as usize)
-        .enumerate()
-        .map(|(column_num, x)| {
+        .map(|x| {
             tool_bar.inc(1);
             total_bar.tick();
             // alternate direction for each column, have to collect into a vec to get types to match
+            /*
             let steps = if column_num % 2 == 0 {
                 ((radius * scale) as usize..rows).collect::<Vec<_>>().into_par_iter()
             } else {
                 ((radius * scale) as usize..rows).rev().collect::<Vec<_>>().into_par_iter()
             };
+            */
+            let steps = (radius * scale) as usize..rows;
             steps
                 .map(|y| {
                     let max = tool
@@ -192,22 +192,22 @@ fn main() -> Result<()> {
                         .iter()
                         .map(|tpoint| {
                             // for each point in the tool adjust it's location to the height map and calculate the intersection
-                            let x_offset = (x as f32 + (tpoint[0] * scale)).round() as i32;
-                            let y_offset = (y as f32 + (tpoint[1] * scale)).round() as i32;
+                            let x_offset = (x as f32 + (tpoint.pos.x * scale)).round() as i32;
+                            let y_offset = (y as f32 + (tpoint.pos.y * scale)).round() as i32;
                             if x_offset < columns as i32
                                 && x_offset >= 0
                                 && y_offset < rows as i32
                                 && y_offset >= 0
                             {
 
-                                heightmap[x_offset as usize][y_offset as usize][2]
-                                    - tpoint[2]
+                                heightmap[x_offset as usize][y_offset as usize].pos.z
+                                    - tpoint.pos.z
                             } else {
-                                bounds.p1.z
+                                bounds.p1.pos.z
                             }
                         })
                         .fold(f32::NAN, f32::max); // same as calling max on all the values for this tool to find the heighest
-                    PointVk::new(x as f32 / scale, y as f32 / scale, max)
+                    Point3d::new(x as f32 / scale, y as f32 / scale, max)
                 })
                 .collect()
         })
@@ -227,9 +227,9 @@ fn main() -> Result<()> {
         let output = heightmap
             .iter()
             .flat_map(|column| {
-                column
-                    .iter()
-                    .map(|point| format!("{:.3} {:.3} {:.3}\n", point[0], point[1], point[2]))
+                column.iter().map(|point| {
+                    format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z)
+                })
             })
             .collect::<Vec<String>>()
             .join("");
@@ -240,9 +240,9 @@ fn main() -> Result<()> {
     // start multi-pass processing
     let stepdown = match opt.stepdown {
         Some(x) => x,
-        None => bounds.p2.z - bounds.p1.z,
+        None => bounds.p2.pos.z - bounds.p1.pos.z,
     };
-    let steps = ((bounds.p2.z - bounds.p1.z) / stepdown) as u64;
+    let steps = ((bounds.p2.pos.z - bounds.p1.pos.z) / stepdown) as u64;
     layer_bar.set_length(steps);
     layer_bar.reset_elapsed();
     layer_bar.set_style(
@@ -257,7 +257,7 @@ fn main() -> Result<()> {
                 .map(|row| {
                     row.iter()
                         .map(|x| match step as f32 * -stepdown {
-                            z if z > x[2] => PointVk::new(x[0], x[1], z),
+                            z if z > x.pos.z => Point3d::new(x.pos.x, x.pos.y, z),
                             _ => *x,
                         })
                         .collect()
@@ -284,36 +284,86 @@ fn main() -> Result<()> {
     // start by moving to max Z
     // TODO: add a safe travel height
     // TODO: add actual feedrate
-    let mut output = format!("G1 Z{:.2} F300\n", bounds.p2.z);
+    let mut output = format!("G0 Z{:.2} F300\n", 0.);
 
-    for layer in points {
+    for (layer_index, layer) in points.iter().enumerate() {
         gcode_bar.inc(1);
         total_bar.tick();
-        output.push_str(&format!(
-            "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
-            layer[0][0][0], layer[0][0][1], layer[0][0][2]
-        ));
+        let mut islands = get_islands(&layer, bounds.p2.pos.z - (stepdown * (layer_index as f32)));
+        for (num, island) in islands.iter_mut().enumerate() {
+            output.push_str(&format!(
+                "G0 Z{:.2}\n",
+                0.
+            ));
+            island.sort();
+            //////// DEBUG
+            let mut file = File::create(format!("island{}.xyz", num))?;
+            let contents = island
+                .iter()
+                .map(|x| format!("{:.3} {:.3} {:.3}\n", x.pos.x, x.pos.y, x.pos.z))
+                .collect::<Vec<String>>()
+                .join("");
+            file.write_all(contents.as_bytes())?;
+            //////
+
+            let mut columns = partition_columns(&island);
+            let mut rev = false;
+
+            while let Some(mut column) = columns.pop() {
+                if rev {
+                    column.reverse();
+                }
+                rev = !rev;
+                //output.push_str(&format!(
+                //    "G1 X{:.2} Y{:.2}\n",
+                //    column[0].pos.x, column[0].pos.y
+                //));
+                let mut last: Option<Point3d> = None;
+                while let Some(point) = column.pop() {
+                    if last.is_none() {
+                        output.push_str(&format!(
+                            "G1 X{:.2} Y{:.2}\n",
+                            point.pos.x, point.pos.y
+                        ));
+                    } else if (point.pos.y - last.unwrap().pos.y).abs() > opt.resolution * 2. && column.len() > 0 {
+                        output.push_str("; skipping\n");
+                        output.push_str(&format!("G0 Z{:.2}\n", 0.));
+                        columns.insert(0, column);
+                        rev = !rev;
+                        break;
+                    }
+                    output.push_str(&format!(
+                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                        point.pos.x, point.pos.y, point.pos.z
+                    ));
+                    last = Some(point);
+                }
+            }
+            output.push_str(&format!("G0 Z{:.2}\n", 0.));
+        }
+        /*
         for row in layer {
             output.push_str(&format!(
                 "G0 X{:.2} Y{:.2}\nG0 Z{:.2}\n",
-                row[0][0], row[0][1], row[0][2]
+                row[0].pos.x, row[0].pos.y, row[0].pos.z
             ));
             for point in row {
-                if !approx_eq!(f32, last[0], point[0], ulps = 2)
-                    || !approx_eq!(f32, last[2], point[2], ulps = 2)
-                {
+                //if !approx_eq!(f32, last.pos.x, point.pos.x, ulps = 3)
+                //    || !approx_eq!(f32, last.pos.z, point.pos.z, ulps = 3)
+                //{
                     output.push_str(&format!(
-                        "G1 X{:.2} Y{:.3} Z{:.2}\n",
-                        point[0], point[1], point[2]
+                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                        point.pos.x, point.pos.y, point.pos.z
                     ));
-                }
+                //}
                 last = point;
             }
             output.push_str(&format!(
                 "G1 X{:?} Y{:?} Z{:?}\nG0 Z{:.2}\n",
-                last[0], last[1], last[2], bounds.p2.z
+                last.pos.x, last.pos.y, last.pos.z, bounds.p2.pos.z
             ));
         }
+        */
     }
     gcode_bar.set_style(
         ProgressStyle::default_bar().template("[5/5] Processing Gcode elapsed: {elapsed}"),
@@ -326,4 +376,29 @@ fn main() -> Result<()> {
     mp.join()?;
     file.write_all(output.as_bytes())?;
     Ok(())
+}
+
+pub fn partition_columns(data: &Vec<Point3d>) -> Vec<Vec<Point3d>> {
+    let mut output = Vec::new();
+    let mut data = data.clone();
+    while data.len() > 0 {
+        let mut column = Vec::new();
+        if let Some(current) = data.pop() {
+            column.push(current);
+            data = data
+                .into_iter()
+                .filter(|point| {
+                    if approx_eq!(f32, current.pos.x, point.pos.x, ulps = 3) {
+                        column.push(*point);
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            column.sort();
+            output.push(column);
+        }
+    }
+    output
 }
