@@ -271,12 +271,14 @@ fn main() -> Result<()> {
         gcode_bar.inc(1);
         total_bar.tick();
         let mut islands = get_islands(&layer, bounds.p2.pos.z - (stepdown * (layer_index as f32)));
-        // TODO: sort islands by distance from each other
-        for island in islands.iter_mut() {
+        let (mut current_island, _) = get_next_island(&islands, &last);
+        // TODO: sort islands before processing
+        while islands.len() > 0 {
+            let mut island = islands.remove(current_island);
             island.sort();
 
             let mut segments = partition_segments(&island, opt.diameter);
-            let mut current_segment = get_next_segment(&mut segments, &last);
+            let (mut current_segment, _) = get_next_segment(&mut segments, &last);
 
             while segments.len() > 0 {
                 let mut segment = segments.remove(current_segment);
@@ -308,9 +310,20 @@ fn main() -> Result<()> {
                     "G1 X{:.2} Y{:.2} Z{:.2}\n",
                     last.pos.x, last.pos.y, last.pos.z
                 ));
-                current_segment = get_next_segment(&mut segments, &last);
+                let tmp = get_next_segment(&mut segments, &last);
+                current_segment = tmp.0;
+                let dist = tmp.1;
+                // if we need to hop multiple columns see if there is a closer island
+                if dist > opt.diameter * 6. {
+                    let tmp = get_next_island(&islands, &last);
+                    if tmp.1 < dist {
+                        break;
+                    }
+                }
             }
             output.push_str(&format!("G0 Z{:.2}\n", 0.));
+            let tmp = get_next_island(&islands, &last);
+            current_island = tmp.0;
         }
     }
     gcode_bar.set_style(ProgressStyle::default_bar().template("[5/5] Processing Gcode elapsed: {elapsed}"));
@@ -359,7 +372,7 @@ pub fn partition_segments(data: &Vec<Point3d>, diameter: f32) -> Vec<Vec<Point3d
     output
 }
 
-pub fn get_next_segment(segments: &mut Vec<Vec<Point3d>>, last: &Point3d) -> usize {
+pub fn get_next_segment(segments: &mut Vec<Vec<Point3d>>, last: &Point3d) -> (usize, f32) {
     let mut dist = f32::MAX;
     let mut current_segment = 0;
     // TODO: see if splitting line segments gives better results
@@ -376,5 +389,24 @@ pub fn get_next_segment(segments: &mut Vec<Vec<Point3d>>, last: &Point3d) -> usi
             current_segment = index;
         }
     }
-    current_segment
+    (current_segment, dist)
+}
+
+pub fn get_next_island(islands: &Vec<Vec<Point3d>>, last: &Point3d) -> (usize, f32) {
+    let mut dist = f32::MAX;
+    let mut current_segment = 0;
+    // TODO: see if splitting line segments gives better results
+    for (index, island) in islands.iter().enumerate() {
+        let curr_dist = distance(&island[island.len() - 1].pos.xy(), &last.pos.xy());
+        if curr_dist < dist {
+            dist = curr_dist;
+            current_segment = index;
+        }
+        let curr_dist = distance(&island[0].pos.xy(), &last.pos.xy());
+        if curr_dist < dist {
+            dist = curr_dist;
+            current_segment = index;
+        }
+    }
+    (current_segment, dist)
 }
