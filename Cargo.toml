@@ -24,6 +24,4 @@ path = "../printer_geo"
 
 [profile.release]
 lto=true
-
-[profile.bench]
-lto=true
+codegen-units=1
