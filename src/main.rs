@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use std::{
     fs::File,
     io::{Read, Write},
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -43,14 +43,14 @@ pub fn generate_heightmap(
 
 pub fn generate_rest_map(heightmap: &[Vec<Point3d>]) -> Vec<Vec<Point3d>> {
     heightmap
-            .iter()
-            .map(|column| {
-                column
-                    .iter()
-                    .map(|point| Point3d::new(point.pos.x, point.pos.y, 0.))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        .iter()
+        .map(|column| {
+            column
+                .iter()
+                .map(|point| Point3d::new(point.pos.x, point.pos.y, 0.))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
@@ -165,7 +165,7 @@ fn main() -> Result<()> {
             file.read_to_end(&mut buffer).unwrap();
             let map: Vec<Vec<Point3d>> = bincode::deserialize(&buffer).unwrap();
             if map.len() != grid.len() && map[0].len() != grid[0].len() {
-                println!("Input heightmap does not match stl or resolution, recomputing");
+                println!("Input restmap does not match stl or resolution, recomputing");
                 generate_rest_map(&heightmap)
             } else {
                 map
@@ -204,9 +204,13 @@ fn main() -> Result<()> {
                         && y_offset < rows as i32
                         && y_offset >= 0
                     {
-                        heightmap[x_offset as usize][y_offset as usize].pos.z
-                        - current_layer_map[x_offset as usize][y_offset as usize].pos.z
-                        - tpoint.pos.z
+                        if current_layer_map[x_offset as usize][y_offset as usize].pos.z > heightmap[x_offset as usize][y_offset as usize].pos.z {
+                            heightmap[x_offset as usize][y_offset as usize].pos.z
+                            - current_layer_map[x_offset as usize][y_offset as usize].pos.z
+                            - tpoint.pos.z
+                        } else {
+                            0.
+                        }
                     } else {
                         f32::NAN
                     }
@@ -217,38 +221,38 @@ fn main() -> Result<()> {
                 }
                 if max.abs() < resolution {
                     max = f32::NAN;
-                } 
-                
+                }
                 column.push(Point3d::new(x as f32 / scale, y as f32 / scale, max + current_layer_map[x][y].pos.z));
             });
             column
         }).collect();
         layer.iter().for_each(|column| {
             column.iter().for_each(|point| {
-                tool.points.iter().for_each(|tpoint| {
-                    // for each point in the tool adjust it's location to the height map and
-                    // calculate the intersection
-                    let x_offset = ((point.pos.x + tpoint.pos.x) * scale).round() as i32;
-                    let y_offset = ((point.pos.y + tpoint.pos.y) * scale).round() as i32;
-                    if x_offset < segments as i32 && x_offset >= 0 && y_offset < rows as i32 && y_offset >= 0 {
-                        let new_pos = point.pos.z + tpoint.pos.z;
-                        if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
-                            current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
-                        };
-                    }
-                });
+                if !point.pos.z.is_nan() {
+                    tool.points.iter().for_each(|tpoint| {
+                        // for each point in the tool adjust it's location to the height map and
+                        // calculate the intersection
+                        let x_offset = ((point.pos.x + tpoint.pos.x) * scale).round() as i32;
+                        let y_offset = ((point.pos.y + tpoint.pos.y) * scale).round() as i32;
+                        if x_offset < segments as i32 && x_offset >= 0 && y_offset < rows as i32 && y_offset >= 0 {
+                            let new_pos = point.pos.z + tpoint.pos.z;
+                            if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
+                                current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
+                            };
+                        }
+                    });
+                }
             })
         });
-        layers.push(layer);
-        if current_layer_map.par_iter().enumerate().all(|(index, column)| {
-            column
-                .par_iter()
-                .enumerate()
-                .all(|(p_index, point)| approx_eq!(f32, point.pos.z, processed_map[index][p_index].pos.z, ulps = 2))
-        }) {
+        if layer
+            .par_iter()
+            .all(|column| column.par_iter().all(|point| point.pos.z.is_nan()))
+        {
             break;
         }
-        {
+        layers.push(layer);
+
+        if opt.debug {
             let mut file = File::create(format!("layer{}.xyz", count))?;
 
             let output = current_layer_map
@@ -262,6 +266,7 @@ fn main() -> Result<()> {
                 .join("");
             file.write_all(output.as_bytes())?;
         }
+
         processed_map = current_layer_map.clone();
         count += 1;
     }
@@ -340,10 +345,10 @@ fn main() -> Result<()> {
                     //if !approx_eq!(f32, last.pos.x, point.pos.x, ulps = 3)
                     //    || !approx_eq!(f32, last.pos.z, point.pos.z, ulps = 3)
                     //{
-                        output.push_str(&format!(
-                            "G1 X{:.2} Y{:.2} Z{:.2}\n",
-                            point.pos.x, point.pos.y, point.pos.z
-                        ));
+                    output.push_str(&format!(
+                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                        point.pos.x, point.pos.y, point.pos.z
+                    ));
                     //}
 
                     last = point;
@@ -355,10 +360,14 @@ fn main() -> Result<()> {
                 let tmp = get_next_segment(&mut segments, &last);
                 current_segment = tmp.0;
                 //let dist = tmp.1;
-                // if we need to hop multiple columns see if there is a closer island
-                //if dist > opt.diameter * 6. {
+                // if we need to hop multiple columns see if there is a closer
+                // island if dist > opt.diameter * 6. {
                 //    let tmp = get_next_island(&islands, &last);
                 //    if tmp.1 < dist {
+                //        segments.push(segment);
+                //        let mut tmp = Vec::new();
+                //        segments.iter().for_each(|x| x.iter().for_each(|y|
+                // tmp.push(*y)));        islands.push(tmp);
                 //        break;
                 //    }
                 //}
