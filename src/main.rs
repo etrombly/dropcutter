@@ -1,7 +1,7 @@
 use anyhow::Result;
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{bfs::*, compute::*, config::*, stl::*};
+use printer_geo::{bfs::*, compute::*, config::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -27,13 +27,13 @@ pub fn generate_heightmap(
         // TODO: there's probably a better way to process this in chunks
         total_bar.tick();
         let len = test[0].len();
-        let tris = intersect_tris(
-            &partition[column],
-            &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
-            &vk,
-        )
-        .unwrap();
-        //intersect_tris_fallback(&partition[column], &test)
+        //let tris = intersect_tris(
+        //    &partition[column],
+        //    &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
+        //    &vk,
+        //)
+        //.unwrap();
+        let tris = intersect_tris_fallback(&partition[column], &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>());
         for chunk in tris.chunks(len) {
             result.push(chunk.to_vec());
         }
@@ -204,7 +204,7 @@ fn main() -> Result<()> {
                         && y_offset < rows as i32
                         && y_offset >= 0
                     {
-                        if current_layer_map[x_offset as usize][y_offset as usize].pos.z > heightmap[x_offset as usize][y_offset as usize].pos.z {
+                        if current_layer_map[x_offset as usize][y_offset as usize].pos.z + tpoint.pos.z > heightmap[x_offset as usize][y_offset as usize].pos.z {
                             heightmap[x_offset as usize][y_offset as usize].pos.z
                             - current_layer_map[x_offset as usize][y_offset as usize].pos.z
                             - tpoint.pos.z
