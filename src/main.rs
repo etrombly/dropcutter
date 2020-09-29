@@ -20,6 +20,7 @@ pub fn generate_heightmap(
     vk: &Vk,
 ) -> Vec<Vec<Point3d>> {
     let mut result = Vec::with_capacity(tests.len());
+    println!("{:?} {:?}", tests.len(), partition.len());
     for (column, test) in tests.chunks(10).enumerate() {
         // ray cast on the GPU to figure out the highest point for each point in this
         // column
@@ -27,13 +28,14 @@ pub fn generate_heightmap(
         // TODO: there's probably a better way to process this in chunks
         total_bar.tick();
         let len = test[0].len();
-        //let tris = intersect_tris(
-        //    &partition[column],
-        //    &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
-        //    &vk,
-        //)
-        //.unwrap();
-        let tris = intersect_tris_fallback(&partition[column], &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>());
+        let tris = intersect_tris(
+            &partition[column],
+            &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
+            &vk,
+        )
+        .unwrap();
+        //let tris = intersect_tris_fallback(&partition[column],
+        // &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>());
         for chunk in tris.chunks(len) {
             result.push(chunk.to_vec());
         }
@@ -117,10 +119,12 @@ fn main() -> Result<()> {
     let grid = generate_grid(&bounds, &scale);
 
     // create columns
-    let columns = generate_columns_chunks(&grid, &bounds, &opt.resolution, &scale);
+    let columns = generate_columns_chunks(&bounds, &scale);
 
     let clock = std::time::Instant::now();
     let partition = partition_tris(&triangles, &columns, &vk).unwrap();
+    //let partition = partition_tris_fallback(&triangles, &columns);
+
     partition_bar.set_style(ProgressStyle::default_bar().template("[1/4] Filtering mesh elapsed: {elapsed}"));
     partition_bar.finish();
     total_bar.tick();
@@ -181,20 +185,20 @@ fn main() -> Result<()> {
     tool_bar.set_style(ProgressStyle::default_bar().template("[3/4] Processing tool path {spinner} {msg}"));
     loop {
         tool_bar.set_message(&format!("pass {}", count));
-        tool_bar.tick();
-        total_bar.tick();
         let mut current_layer_map = processed_map.clone();
         let layer: Vec<Vec<Point3d>> = ((radius * scale) as usize..segments)
         .into_par_iter()
         // space each column based on diameter and stepover
         .step_by((stepover * scale).ceil() as usize)
         .map(|x| {
+            tool_bar.tick();
+            total_bar.tick();
             let mut column = Vec::new();
             ((radius * scale) as usize..rows)
             .for_each(|y| {
-                let mut max = tool
+                let max: Vec<_> = tool
                 .points
-                .iter()
+                .par_iter()
                 .map(|tpoint| {
                     // for each point in the tool adjust it's location to the height map and calculate the intersection
                     let x_offset = (x as f32 + (tpoint.pos.x * scale)).round() as i32;
@@ -204,25 +208,28 @@ fn main() -> Result<()> {
                         && y_offset < rows as i32
                         && y_offset >= 0
                     {
-                        if current_layer_map[x_offset as usize][y_offset as usize].pos.z + tpoint.pos.z > heightmap[x_offset as usize][y_offset as usize].pos.z {
-                            heightmap[x_offset as usize][y_offset as usize].pos.z
-                            - current_layer_map[x_offset as usize][y_offset as usize].pos.z
-                            - tpoint.pos.z
-                        } else {
-                            0.
-                        }
+                        let diff = heightmap[x_offset as usize][y_offset as usize].pos.z
+                        - current_layer_map[x_offset as usize][y_offset as usize].pos.z
+                        - tpoint.pos.z;
+                        let needed = heightmap[x_offset as usize][y_offset as usize].pos.z - current_layer_map[x_offset as usize][y_offset as usize].pos.z < -resolution;
+                        (needed, diff)
                     } else {
-                        f32::NAN
+                        // TODO: this should probably be bounds.p1.pos.z
+                        (false, f32::NAN)
                     }
-                })
-                .fold(f32::NAN, f32::max); // same as calling max on all the values for this tool to find the heighest
-                if max.abs() > stepdown {
-                    max = -stepdown;
+                }).collect();
+                let mut needed = max.iter().fold(f32::NAN, |acc, curr| if curr.0{acc.max(curr.1)}else{acc});
+                let max = max.iter().fold(f32::NAN, |acc, curr| acc.max(curr.1));
+                if max > needed {
+                    needed = max;
                 }
-                if max.abs() < resolution {
-                    max = f32::NAN;
+                if needed < -stepdown {
+                    needed = -stepdown;
                 }
-                column.push(Point3d::new(x as f32 / scale, y as f32 / scale, max + current_layer_map[x][y].pos.z));
+                if needed > -resolution {
+                    needed = f32::NAN;
+                }
+                column.push(Point3d::new(x as f32 / scale, y as f32 / scale, needed + current_layer_map[x][y].pos.z));
             });
             column
         }).collect();
@@ -238,22 +245,51 @@ fn main() -> Result<()> {
                             let new_pos = point.pos.z + tpoint.pos.z;
                             if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
+                                if new_pos + 0.0001  < heightmap[x_offset as usize][y_offset as usize].pos.z{
+                                    println!(
+                                        "too deep! req: {:.4?} curr: {:.4?} tool: {:.4?} {:?}",
+                                        heightmap[x_offset as usize][y_offset as usize].pos.z,
+                                        point.pos.z,
+                                        tpoint.pos.z,
+                                        current_layer_map[x_offset as usize][y_offset as usize]
+                                    );
+                                }
                             };
                         }
                     });
                 }
             })
         });
-        if layer
+        if opt.debug {
+            let mut file = File::create(format!("layer{}.xyz", count))?;
+
+            let output = layer
+                .iter()
+                .flat_map(|column| {
+                    column
+                        .iter()
+                        .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
+                })
+                .collect::<Vec<String>>()
+                .join("");
+            file.write_all(output.as_bytes())?;
+        }
+        if current_layer_map
             .par_iter()
-            .all(|column| column.par_iter().all(|point| point.pos.z.is_nan()))
+            .zip(&processed_map)
+            .all(|(column_cur, column_proc)| {
+                column_cur
+                    .par_iter()
+                    .zip(column_proc)
+                    .all(|(point_cur, point_proc)| &point_cur == &point_proc)
+            })
         {
             break;
         }
         layers.push(layer);
 
         if opt.debug {
-            let mut file = File::create(format!("layer{}.xyz", count))?;
+            let mut file = File::create(format!("heightmap{}.xyz", count))?;
 
             let output = current_layer_map
                 .iter()
@@ -314,10 +350,22 @@ fn main() -> Result<()> {
     let mut output = format!("G0 Z{:.2} F300\n", 0.);
     let mut last = Point3d::new(0., 0., 0.);
 
-    for layer in layers.iter() {
+    for (layer_i, layer) in layers.iter().enumerate() {
         gcode_bar.inc(1);
         total_bar.tick();
         let mut islands = get_islands(&layer);
+        if opt.debug {
+            for (island_i, island) in islands.iter().enumerate() {
+                let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
+
+                let output = island
+                    .iter()
+                    .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
+                    .collect::<Vec<String>>()
+                    .join("");
+                file.write_all(output.as_bytes())?;
+            }
+        }
         let (mut current_island, _) = get_next_island(&islands, &last);
         // TODO: sort islands before processing
         while islands.len() > 0 {
@@ -332,7 +380,7 @@ fn main() -> Result<()> {
                 // TODO: instead of retracting to safe height build a move to travel closer to
                 // model if the segments aren't adjacent retract and travel to
                 // next segment
-                if distance(&segment[segment.len() - 1].pos.xy(), &last.pos.xy()) > opt.diameter * 2. {
+                if distance(&segment[segment.len() - 1].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
                     output.push_str(&format!(
                         "G0 Z0\nG0 X{:.2} Y{:.2}\n",
                         segment[segment.len() - 1].pos.x,
