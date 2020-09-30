@@ -34,8 +34,10 @@ pub fn generate_heightmap(
             &vk,
         )
         .unwrap();
-        //let tris = intersect_tris_fallback(&partition[column],
-        // &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>());
+        //let tris = intersect_tris_fallback(
+        //    &partition[column],
+        //    &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
+        //);
         for chunk in tris.chunks(len) {
             result.push(chunk.to_vec());
         }
@@ -96,12 +98,7 @@ fn main() -> Result<()> {
 
     if opt.debug {
         let mut file = File::create("tool.xyz")?;
-        let output = tool
-            .points
-            .iter()
-            .map(|x| format!("{:.3} {:.3} {:.3}\n", x.pos.x, x.pos.y, x.pos.z))
-            .collect::<Vec<String>>()
-            .join("");
+        let output = to_point_cloud(&tool.points);
         file.write_all(output.as_bytes())?;
     }
 
@@ -218,8 +215,8 @@ fn main() -> Result<()> {
                         (false, f32::NAN)
                     }
                 }).collect();
-                let mut needed = max.iter().fold(f32::NAN, |acc, curr| if curr.0{acc.max(curr.1)}else{acc});
-                let max = max.iter().fold(f32::NAN, |acc, curr| acc.max(curr.1));
+                let mut needed = max.par_iter().filter_map(|x| if x.0 {Some(x.1)}else{None}).reduce(|| f32::NAN, f32::max);
+                let max = max.par_iter().map(|x| x.1).reduce(|| f32::NAN, f32::max);
                 if max > needed {
                     needed = max;
                 }
@@ -245,7 +242,7 @@ fn main() -> Result<()> {
                             let new_pos = point.pos.z + tpoint.pos.z;
                             if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
-                                if new_pos + 0.0001  < heightmap[x_offset as usize][y_offset as usize].pos.z{
+                                if new_pos + 0.0001 < heightmap[x_offset as usize][y_offset as usize].pos.z {
                                     println!(
                                         "too deep! req: {:.4?} curr: {:.4?} tool: {:.4?} {:?}",
                                         heightmap[x_offset as usize][y_offset as usize].pos.z,
@@ -263,15 +260,7 @@ fn main() -> Result<()> {
         if opt.debug {
             let mut file = File::create(format!("layer{}.xyz", count))?;
 
-            let output = layer
-                .iter()
-                .flat_map(|column| {
-                    column
-                        .iter()
-                        .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
-                })
-                .collect::<Vec<String>>()
-                .join("");
+            let output = layer.par_iter().map(to_point_cloud).collect::<Vec<String>>().join("");
             file.write_all(output.as_bytes())?;
         }
         if current_layer_map
@@ -292,12 +281,8 @@ fn main() -> Result<()> {
             let mut file = File::create(format!("heightmap{}.xyz", count))?;
 
             let output = current_layer_map
-                .iter()
-                .flat_map(|column| {
-                    column
-                        .iter()
-                        .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
-                })
+                .par_iter()
+                .map(to_point_cloud)
                 .collect::<Vec<String>>()
                 .join("");
             file.write_all(output.as_bytes())?;
@@ -318,12 +303,8 @@ fn main() -> Result<()> {
         let mut file = File::create("pcl.xyz")?;
 
         let output = heightmap
-            .iter()
-            .flat_map(|column| {
-                column
-                    .iter()
-                    .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
-            })
+            .par_iter()
+            .map(to_point_cloud)
             .collect::<Vec<String>>()
             .join("");
         file.write_all(output.as_bytes())?;
@@ -357,12 +338,7 @@ fn main() -> Result<()> {
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
-
-                let output = island
-                    .iter()
-                    .map(|point| format!("{:.3} {:.3} {:.3}\n", point.pos.x, point.pos.y, point.pos.z))
-                    .collect::<Vec<String>>()
-                    .join("");
+                let output = to_point_cloud(&island);
                 file.write_all(output.as_bytes())?;
             }
         }
