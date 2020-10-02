@@ -20,7 +20,6 @@ pub fn generate_heightmap(
     vk: &Vk,
 ) -> Vec<Vec<Point3d>> {
     let mut result = Vec::with_capacity(tests.len());
-    println!("{:?} {:?}", tests.len(), partition.len());
     for (column, test) in tests.chunks(10).enumerate() {
         // ray cast on the GPU to figure out the highest point for each point in this
         // column
@@ -193,7 +192,7 @@ fn main() -> Result<()> {
             let mut column = Vec::new();
             ((radius * scale) as usize..rows)
             .for_each(|y| {
-                let max: Vec<_> = tool
+                let mut max = tool
                 .points
                 .par_iter()
                 .map(|tpoint| {
@@ -205,28 +204,26 @@ fn main() -> Result<()> {
                         && y_offset < rows as i32
                         && y_offset >= 0
                     {
-                        let diff = heightmap[x_offset as usize][y_offset as usize].pos.z
-                        - current_layer_map[x_offset as usize][y_offset as usize].pos.z
-                        - tpoint.pos.z;
-                        let needed = heightmap[x_offset as usize][y_offset as usize].pos.z - current_layer_map[x_offset as usize][y_offset as usize].pos.z < -resolution;
-                        (needed, diff)
+                        // for each tool point find the amount still needed to mill
+                        let mut diff = heightmap[x_offset as usize][y_offset as usize].pos.z
+                                       - current_layer_map[x_offset as usize][y_offset as usize].pos.z;
+                        // if amount is over the stepdown, clamp it
+                        if diff < -stepdown {
+                            diff = -stepdown;
+                        }
+                        // calculate the offset compared to current_layer_map[x][y]
+                        diff = current_layer_map[x_offset as usize][y_offset as usize].pos.z + diff - tpoint.pos.z;
+                        diff
                     } else {
                         // TODO: this should probably be bounds.p1.pos.z
-                        (false, f32::NAN)
+                        f32::NAN
                     }
-                }).collect();
-                let mut needed = max.par_iter().filter_map(|x| if x.0 {Some(x.1)}else{None}).reduce(|| f32::NAN, f32::max);
-                let max = max.par_iter().map(|x| x.1).reduce(|| f32::NAN, f32::max);
-                if max > needed {
-                    needed = max;
+                }).reduce(|| f32::NAN, f32::max);
+                // if the max depth is the same as where we are, filter this point out
+                if approx_eq!(f32,max, current_layer_map[x][y].pos.z, ulps = 3) {
+                    max = f32::NAN;
                 }
-                if needed < -stepdown {
-                    needed = -stepdown;
-                }
-                if needed > -resolution {
-                    needed = f32::NAN;
-                }
-                column.push(Point3d::new(x as f32 / scale, y as f32 / scale, needed + current_layer_map[x][y].pos.z));
+                column.push(Point3d::new(x as f32 / scale, y as f32 / scale, max));
             });
             column
         }).collect();
@@ -242,15 +239,6 @@ fn main() -> Result<()> {
                             let new_pos = point.pos.z + tpoint.pos.z;
                             if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
-                                if new_pos + 0.0001 < heightmap[x_offset as usize][y_offset as usize].pos.z {
-                                    println!(
-                                        "too deep! req: {:.4?} curr: {:.4?} tool: {:.4?} {:?}",
-                                        heightmap[x_offset as usize][y_offset as usize].pos.z,
-                                        point.pos.z,
-                                        tpoint.pos.z,
-                                        current_layer_map[x_offset as usize][y_offset as usize]
-                                    );
-                                }
                             };
                         }
                     });
