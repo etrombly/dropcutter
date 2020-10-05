@@ -12,6 +12,7 @@ use std::{
 };
 use structopt::StructOpt;
 
+/*
 pub fn generate_heightmap(
     tests: &[Vec<Point3d>],
     partition: Vec<Vec<Triangle3d>>,
@@ -42,7 +43,7 @@ pub fn generate_heightmap(
         }
     }
     result
-}
+}*/
 
 pub fn generate_rest_map(heightmap: &[Vec<Point3d>]) -> Vec<Vec<Point3d>> {
     heightmap
@@ -397,6 +398,7 @@ fn main() -> Result<()> {
     total_bar.finish();
     mp.join()?;
     file.write_all(output.as_bytes())?;
+    */
     Ok(())
 }
 
