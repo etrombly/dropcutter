@@ -1,7 +1,7 @@
 use anyhow::Result;
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{bfs::*, compute::*, config::*, geo::*, stl::*};
+use printer_geo::{bfs::*, vulkan::{compute::*,vkstate::{init_vulkan, VulkanState}}, config::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -11,13 +11,14 @@ use std::{
     time::Duration,
 };
 use structopt::StructOpt;
+use std::rc::Rc;
 
 pub fn generate_heightmap(
     tests: &[Vec<Point3d>],
     partition: Vec<Vec<Triangle3d>>,
     bar: &ProgressBar,
     total_bar: &ProgressBar,
-    vk: &Vk,
+    vk: Rc<VulkanState>,
 ) -> Vec<Vec<Point3d>> {
     let mut result = Vec::with_capacity(tests.len());
     for (column, test) in tests.chunks(10).enumerate() {
@@ -30,7 +31,7 @@ pub fn generate_heightmap(
         let tris = intersect_tris(
             &partition[column],
             &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
-            &vk,
+            vk.clone(),
         )
         .unwrap();
         //let tris = intersect_tris_fallback(
@@ -93,7 +94,7 @@ fn main() -> Result<()> {
     let mut triangles = stl_to_tri(&opt.input)?;
 
     // initialize vulkan
-    let vk = Vk::new()?;
+    let vk = Rc::new(init_vulkan()?);
 
     if opt.debug {
         let mut file = File::create("tool.xyz")?;
@@ -118,8 +119,8 @@ fn main() -> Result<()> {
     let columns = generate_columns_chunks(&bounds, &scale);
 
     let clock = std::time::Instant::now();
-    let partition = partition_tris(&triangles, &columns, &vk).unwrap();
-    //let partition = partition_tris_fallback(&triangles, &columns);
+    //let partition = partition_tris(&triangles, &columns, vk.clone()).unwrap();
+    let partition = partition_tris_fallback(&triangles, &columns);
 
     partition_bar.set_style(ProgressStyle::default_bar().template("[1/4] Filtering mesh elapsed: {elapsed}"));
     partition_bar.finish();
@@ -140,12 +141,12 @@ fn main() -> Result<()> {
             let map: Vec<Vec<Point3d>> = bincode::deserialize(&buffer).unwrap();
             if map.len() != grid.len() && map[0].len() != grid[0].len() {
                 println!("Input heightmap does not match stl or resolution, recomputing");
-                generate_heightmap(&grid, partition, &height_bar, &total_bar, &vk)
+                generate_heightmap(&grid, partition, &height_bar, &total_bar, vk.clone())
             } else {
                 map
             }
         },
-        _ => generate_heightmap(&grid, partition, &height_bar, &total_bar, &vk),
+        _ => generate_heightmap(&grid, partition, &height_bar, &total_bar, vk.clone()),
     };
 
     height_bar.set_style(ProgressStyle::default_bar().template("[2/4] Computing height map elapsed: {elapsed}"));
