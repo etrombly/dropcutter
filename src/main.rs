@@ -119,9 +119,8 @@ fn main() -> Result<()> {
     let columns = generate_columns_chunks(&bounds, &scale);
 
     let clock = std::time::Instant::now();
-    //let partition = partition_tris(&triangles, &columns, vk.clone()).unwrap();
-    let partition = partition_tris_fallback(&triangles, &columns);
-
+    let partition = partition_tris(&triangles, &columns, vk.clone()).unwrap();
+    //let partition = partition_tris_fallback(&triangles, &columns);
     partition_bar.set_style(ProgressStyle::default_bar().template("[1/4] Filtering mesh elapsed: {elapsed}"));
     partition_bar.finish();
     total_bar.tick();

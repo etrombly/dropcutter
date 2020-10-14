@@ -1,1 +1,6 @@
 /target
+*.xyz
+*.nc
+*.map
+/vendor
+/.vscode
