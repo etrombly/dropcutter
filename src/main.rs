@@ -1,7 +1,7 @@
 use anyhow::Result;
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{bfs::*, vulkan::{compute::*,vkstate::{init_vulkan, VulkanState}}, config::*, geo::*, stl::*};
+use printer_geo::{tsp::{nn::*, two_opt::*}, bfs::*, vulkan::{compute::*,vkstate::{init_vulkan, VulkanState}}, config::*, geo::*, stl::*};
 use rayon::prelude::*;
 use std::{
     fs::File,
@@ -322,14 +322,50 @@ fn main() -> Result<()> {
     for (layer_i, layer) in layers.iter().enumerate() {
         gcode_bar.inc(1);
         total_bar.tick();
-        let mut islands = get_islands(&layer);
+        let mut islands = get_islands(&layer, opt.diameter);
+        islands = nn(islands, last);
+        //islands = optimize_kopt(islands, last, std::time::Duration::new(10,0));
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
-                let output = to_point_cloud(&island);
+                let output = island.iter().map(|segment| to_point_cloud(&segment)).collect::<Vec<_>>().join("\n");
                 file.write_all(output.as_bytes())?;
             }
         }
+        for island in islands.iter_mut() {
+            for segment in island.iter_mut() {
+                // TODO: instead of retracting to safe height build a move to travel closer to
+                // model if the segments aren't adjacent retract and travel to
+                // next segment
+                if distance(&segment[0].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
+                    output.push_str(&format!(
+                        "G0 Z0\nG0 X{:.2} Y{:.2}\n",
+                        segment[0].pos.x,
+                        segment[0].pos.y
+                    ));
+                }
+
+                // don't write a move if only Y changed
+                for point in segment {
+                    //if !approx_eq!(f32, last.pos.x, point.pos.x, ulps = 3)
+                    //    || !approx_eq!(f32, last.pos.z, point.pos.z, ulps = 3)
+                    //{
+                    output.push_str(&format!(
+                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                        point.pos.x, point.pos.y, point.pos.z
+                    ));
+                    //}
+
+                    last = *point;
+                }
+                output.push_str(&format!(
+                    "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                    last.pos.x, last.pos.y, last.pos.z
+                ));
+            }
+            output.push_str(&format!("G0 Z{:.2}\n", 0.));
+        }
+        /*
         let (mut current_island, _) = get_next_island(&islands, &last);
         // TODO: sort islands before processing
         while islands.len() > 0 {
@@ -371,23 +407,11 @@ fn main() -> Result<()> {
                 ));
                 let tmp = get_next_segment(&mut segments, &last);
                 current_segment = tmp.0;
-                //let dist = tmp.1;
-                // if we need to hop multiple columns see if there is a closer
-                // island if dist > opt.diameter * 6. {
-                //    let tmp = get_next_island(&islands, &last);
-                //    if tmp.1 < dist {
-                //        segments.push(segment);
-                //        let mut tmp = Vec::new();
-                //        segments.iter().for_each(|x| x.iter().for_each(|y|
-                // tmp.push(*y)));        islands.push(tmp);
-                //        break;
-                //    }
-                //}
             }
             output.push_str(&format!("G0 Z{:.2}\n", 0.));
             let tmp = get_next_island(&islands, &last);
             current_island = tmp.0;
-        }
+        }*/
     }
     gcode_bar.set_style(ProgressStyle::default_bar().template("[4/4] Processing Gcode elapsed: {elapsed}"));
     gcode_bar.finish();
@@ -398,78 +422,4 @@ fn main() -> Result<()> {
     mp.join()?;
     file.write_all(output.as_bytes())?;
     Ok(())
-}
-
-pub fn partition_segments(data: &Vec<Point3d>, diameter: f32) -> Vec<Vec<Point3d>> {
-    let mut output = Vec::new();
-    let mut data = data.clone();
-    while data.len() > 0 {
-        let mut column = Vec::new();
-        if let Some(current) = data.pop() {
-            column.push(current);
-            data = data
-                .into_iter()
-                .filter(|point| {
-                    if approx_eq!(f32, current.pos.x, point.pos.x, ulps = 3) {
-                        column.push(*point);
-                        false
-                    } else {
-                        true
-                    }
-                })
-                .collect();
-            column.sort();
-            let mut segment = Vec::new();
-            let mut last = column[0];
-            for point in column {
-                if (point.pos.y - last.pos.y).abs() > diameter * 2. {
-                    output.push(segment.clone());
-                    segment.clear();
-                }
-                segment.push(point);
-                last = point;
-            }
-            output.push(segment);
-        }
-    }
-    output
-}
-
-pub fn get_next_segment(segments: &mut Vec<Vec<Point3d>>, last: &Point3d) -> (usize, f32) {
-    let mut dist = f32::MAX;
-    let mut current_segment = 0;
-    // TODO: see if splitting line segments gives better results
-    for (index, segment) in segments.iter_mut().enumerate() {
-        let curr_dist = distance(&segment[segment.len() - 1].pos.xy(), &last.pos.xy());
-        if curr_dist < dist {
-            dist = curr_dist;
-            current_segment = index;
-        }
-        let curr_dist = distance(&segment[0].pos.xy(), &last.pos.xy());
-        if curr_dist < dist {
-            dist = curr_dist;
-            segment.reverse();
-            current_segment = index;
-        }
-    }
-    (current_segment, dist)
-}
-
-pub fn get_next_island(islands: &Vec<Vec<Point3d>>, last: &Point3d) -> (usize, f32) {
-    let mut dist = f32::MAX;
-    let mut current_segment = 0;
-    // TODO: see if splitting line segments gives better results
-    for (index, island) in islands.iter().enumerate() {
-        let curr_dist = distance(&island[island.len() - 1].pos.xy(), &last.pos.xy());
-        if curr_dist < dist {
-            dist = curr_dist;
-            current_segment = index;
-        }
-        let curr_dist = distance(&island[0].pos.xy(), &last.pos.xy());
-        if curr_dist < dist {
-            dist = curr_dist;
-            current_segment = index;
-        }
-    }
-    (current_segment, dist)
 }
