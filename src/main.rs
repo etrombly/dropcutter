@@ -1,17 +1,27 @@
 use anyhow::Result;
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
-use printer_geo::{tsp::{nn::*, two_opt::*}, bfs::*, vulkan::{compute::*,vkstate::{init_vulkan, VulkanState}}, config::*, geo::*, stl::*};
+use printer_geo::{
+    bfs::*,
+    config::*,
+    geo::*,
+    stl::*,
+    tsp::{nn::*, two_opt::*},
+    vulkan::{
+        compute::*,
+        vkstate::{init_vulkan, VulkanState},
+    },
+};
 use rayon::prelude::*;
 use std::{
     fs::File,
     io::{Read, Write},
+    rc::Rc,
     sync::Arc,
     thread,
     time::Duration,
 };
 use structopt::StructOpt;
-use std::rc::Rc;
 
 pub fn generate_heightmap(
     tests: &[Vec<Point3d>],
@@ -30,7 +40,7 @@ pub fn generate_heightmap(
         let len = test[0].len();
         let tris = intersect_tris(
             &partition[column],
-            &test.iter().flat_map(|x| x).copied().collect::<Vec<_>>(),
+            &test.iter().flatten().copied().collect::<Vec<_>>(),
             vk.clone(),
         )
         .unwrap();
@@ -140,12 +150,12 @@ fn main() -> Result<()> {
             let map: Vec<Vec<Point3d>> = bincode::deserialize(&buffer).unwrap();
             if map.len() != grid.len() && map[0].len() != grid[0].len() {
                 println!("Input heightmap does not match stl or resolution, recomputing");
-                generate_heightmap(&grid, partition, &height_bar, &total_bar, vk.clone())
+                generate_heightmap(&grid, partition, &height_bar, &total_bar, vk)
             } else {
                 map
             }
         },
-        _ => generate_heightmap(&grid, partition, &height_bar, &total_bar, vk.clone()),
+        _ => generate_heightmap(&grid, partition, &height_bar, &total_bar, vk),
     };
 
     height_bar.set_style(ProgressStyle::default_bar().template("[2/4] Computing height map elapsed: {elapsed}"));
@@ -248,17 +258,22 @@ fn main() -> Result<()> {
         if opt.debug {
             let mut file = File::create(format!("layer{}.xyz", count))?;
 
-            let output = layer.par_iter().map(to_point_cloud).collect::<Vec<String>>().join("");
+            let output = layer
+                .par_iter()
+                .map(|x| to_point_cloud(x))
+                .collect::<Vec<String>>()
+                .join("");
             file.write_all(output.as_bytes())?;
         }
         if current_layer_map
             .par_iter()
             .zip(&processed_map)
             .all(|(column_cur, column_proc)| {
+                total_bar.tick();
                 column_cur
                     .par_iter()
                     .zip(column_proc)
-                    .all(|(point_cur, point_proc)| &point_cur == &point_proc)
+                    .all(|(point_cur, point_proc)| point_cur == point_proc)
             })
         {
             break;
@@ -270,7 +285,7 @@ fn main() -> Result<()> {
 
             let output = current_layer_map
                 .par_iter()
-                .map(to_point_cloud)
+                .map(|x| to_point_cloud(x))
                 .collect::<Vec<String>>()
                 .join("");
             file.write_all(output.as_bytes())?;
@@ -292,7 +307,7 @@ fn main() -> Result<()> {
 
         let output = heightmap
             .par_iter()
-            .map(to_point_cloud)
+            .map(|x| to_point_cloud(x))
             .collect::<Vec<String>>()
             .join("");
         file.write_all(output.as_bytes())?;
@@ -328,7 +343,11 @@ fn main() -> Result<()> {
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
-                let output = island.iter().map(|segment| to_point_cloud(&segment)).collect::<Vec<_>>().join("\n");
+                let output = island
+                    .iter()
+                    .map(|segment| to_point_cloud(&segment))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 file.write_all(output.as_bytes())?;
             }
         }
@@ -340,8 +359,7 @@ fn main() -> Result<()> {
                 if distance(&segment[0].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
                     output.push_str(&format!(
                         "G0 Z0\nG0 X{:.2} Y{:.2}\n",
-                        segment[0].pos.x,
-                        segment[0].pos.y
+                        segment[0].pos.x, segment[0].pos.y
                     ));
                 }
 
