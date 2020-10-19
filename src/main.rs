@@ -339,7 +339,7 @@ fn main() -> Result<()> {
         total_bar.tick();
         let mut islands = get_islands(&layer, opt.diameter);
         islands = nn(&islands, last);
-        //islands = optimize_kopt(&islands, last);
+        //islands = optimize_kopt(&islands, &last);
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
@@ -383,53 +383,6 @@ fn main() -> Result<()> {
             }
             output.push_str(&format!("G0 Z{:.2}\n", 0.));
         }
-        /*
-        let (mut current_island, _) = get_next_island(&islands, &last);
-        // TODO: sort islands before processing
-        while islands.len() > 0 {
-            let mut island = islands.remove(current_island);
-            island.sort();
-
-            let mut segments = partition_segments(&island, opt.diameter);
-            let (mut current_segment, _) = get_next_segment(&mut segments, &last);
-
-            while segments.len() > 0 {
-                let mut segment = segments.remove(current_segment);
-                // TODO: instead of retracting to safe height build a move to travel closer to
-                // model if the segments aren't adjacent retract and travel to
-                // next segment
-                if distance(&segment[segment.len() - 1].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
-                    output.push_str(&format!(
-                        "G0 Z0\nG0 X{:.2} Y{:.2}\n",
-                        segment[segment.len() - 1].pos.x,
-                        segment[segment.len() - 1].pos.y
-                    ));
-                }
-
-                // don't write a move if only Y changed
-                while let Some(point) = segment.pop() {
-                    //if !approx_eq!(f32, last.pos.x, point.pos.x, ulps = 3)
-                    //    || !approx_eq!(f32, last.pos.z, point.pos.z, ulps = 3)
-                    //{
-                    output.push_str(&format!(
-                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
-                        point.pos.x, point.pos.y, point.pos.z
-                    ));
-                    //}
-
-                    last = point;
-                }
-                output.push_str(&format!(
-                    "G1 X{:.2} Y{:.2} Z{:.2}\n",
-                    last.pos.x, last.pos.y, last.pos.z
-                ));
-                let tmp = get_next_segment(&mut segments, &last);
-                current_segment = tmp.0;
-            }
-            output.push_str(&format!("G0 Z{:.2}\n", 0.));
-            let tmp = get_next_island(&islands, &last);
-            current_island = tmp.0;
-        }*/
     }
     gcode_bar.set_style(ProgressStyle::default_bar().template("[4/4] Processing Gcode elapsed: {elapsed}"));
     gcode_bar.finish();
