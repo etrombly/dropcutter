@@ -117,7 +117,6 @@ fn main() -> Result<()> {
     move_to_zero(&mut triangles);
     // get bounds for the model
     let bounds = get_bounds(&triangles);
-    println!("{:#?}", bounds);
 
     // create the test points for the height map
     let grid = generate_grid(&bounds, &scale);
@@ -347,8 +346,8 @@ fn main() -> Result<()> {
         gcode_bar.inc(1);
         total_bar.tick();
         let mut islands = get_islands(&layer, opt.diameter);
-        islands = nn(&islands, last);
-        //islands = optimize_kopt(&islands, &last);
+        //islands = nn(&islands, last);
+        islands = optimize_kopt(&islands, &last);
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
