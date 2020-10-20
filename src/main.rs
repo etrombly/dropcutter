@@ -74,6 +74,7 @@ fn main() -> Result<()> {
     let stepover = opt.diameter * (opt.stepover / 100.);
     let scale = 1. / opt.resolution;
     let resolution = opt.resolution;
+    let stepdown = opt.stepdown;
     let tool = opt.tool.create(opt.diameter, opt.angle, scale);
 
     let mp = Arc::new(MultiProgress::with_draw_target(ProgressDrawTarget::stderr_nohz()));
@@ -117,13 +118,6 @@ fn main() -> Result<()> {
     // get bounds for the model
     let bounds = get_bounds(&triangles);
     println!("{:#?}", bounds);
-
-    let stepdown = match opt.stepdown {
-        Some(x) => -x,
-        None => -(bounds.p2.pos.z - bounds.p1.pos.z),
-    };
-    println!("stepdown {:?}", stepdown);
-
 
     // create the test points for the height map
     let grid = generate_grid(&bounds, &scale);
@@ -221,8 +215,8 @@ fn main() -> Result<()> {
                         let mut diff = heightmap[x_offset as usize][y_offset as usize].pos.z
                                        - current_layer_map[x_offset as usize][y_offset as usize].pos.z;
                         // if amount is over the stepdown, clamp it
-                        if diff < stepdown {
-                            diff = stepdown;
+                        if diff < -stepdown {
+                            diff = -stepdown;
                         }
                         // calculate the offset compared to current_layer_map[x][y]
                         diff = current_layer_map[x_offset as usize][y_offset as usize].pos.z + diff - tpoint.pos.z;
