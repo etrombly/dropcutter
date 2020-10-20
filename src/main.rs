@@ -116,11 +116,14 @@ fn main() -> Result<()> {
     move_to_zero(&mut triangles);
     // get bounds for the model
     let bounds = get_bounds(&triangles);
+    println!("{:#?}", bounds);
 
     let stepdown = match opt.stepdown {
-        Some(x) => x,
-        None => bounds.p2.pos.z - bounds.p1.pos.z,
+        Some(x) => -x,
+        None => -(bounds.p2.pos.z - bounds.p1.pos.z),
     };
+    println!("stepdown {:?}", stepdown);
+
 
     // create the test points for the height map
     let grid = generate_grid(&bounds, &scale);
@@ -184,7 +187,7 @@ fn main() -> Result<()> {
         _ => generate_rest_map(&heightmap),
     };
     // TODO: rename to layers?
-    let mut layers = Vec::new();
+    let mut layers: Vec<Vec<Vec<Point3d>>> = Vec::new();
     // process height map with selected tool to find heights
     tool_bar.reset_elapsed();
     let mut count = 1;
@@ -218,8 +221,8 @@ fn main() -> Result<()> {
                         let mut diff = heightmap[x_offset as usize][y_offset as usize].pos.z
                                        - current_layer_map[x_offset as usize][y_offset as usize].pos.z;
                         // if amount is over the stepdown, clamp it
-                        if diff < -stepdown {
-                            diff = -stepdown;
+                        if diff < stepdown {
+                            diff = stepdown;
                         }
                         // calculate the offset compared to current_layer_map[x][y]
                         diff = current_layer_map[x_offset as usize][y_offset as usize].pos.z + diff - tpoint.pos.z;
@@ -230,7 +233,7 @@ fn main() -> Result<()> {
                     }
                 }).reduce(|| f32::NAN, f32::max);
                 // if the max depth is the same as where we are, filter this point out
-                if approx_eq!(f32,max, current_layer_map[x][y].pos.z, ulps = 3) {
+                if approx_eq!(f32, max, current_layer_map[x][y].pos.z, ulps = 3) {
                     max = f32::NAN;
                 }
                 column.push(Point3d::new(x as f32 / scale, y as f32 / scale, max));
@@ -265,19 +268,23 @@ fn main() -> Result<()> {
                 .join("");
             file.write_all(output.as_bytes())?;
         }
-        if current_layer_map
-            .par_iter()
-            .zip(&processed_map)
-            .all(|(column_cur, column_proc)| {
-                total_bar.tick();
-                column_cur
-                    .par_iter()
-                    .zip(column_proc)
-                    .all(|(point_cur, point_proc)| point_cur == point_proc)
-            })
-        {
-            break;
+
+        if layers.len() > 0 {
+            if current_layer_map
+                .par_iter()
+                .zip(&processed_map)
+                .all(|(column_cur, column_proc)| {
+                    total_bar.tick();
+                    column_cur
+                        .par_iter()
+                        .zip(column_proc)
+                        .all(|(point_cur, point_proc)| point_cur == point_proc)
+                })
+            {
+                break;
+            }
         }
+
         layers.push(layer);
 
         if opt.debug {
@@ -319,9 +326,17 @@ fn main() -> Result<()> {
         let mut file = File::create("height.map")?;
         file.write_all(&encoded).unwrap();
 
+        let stl = heightmap_to_stl(&heightmap)?;
+        let mut file = File::create("heightmap.stl")?;
+        file.write_all(&stl).unwrap();
+
         let encoded = bincode::serialize(&processed_map).unwrap();
         let mut file = File::create("rest.map")?;
         file.write_all(&encoded).unwrap();
+
+        let stl = heightmap_to_stl(&processed_map)?;
+        let mut file = File::create("restmap.stl")?;
+        file.write_all(&stl).unwrap();
     }
 
     let clock = std::time::Instant::now();
@@ -331,7 +346,7 @@ fn main() -> Result<()> {
     let mut file = File::create(opt.output)?;
     // start by moving to max Z
     // TODO: add actual feedrate
-    let mut output = format!("G0 Z{:.2} F300\n", 0.);
+    let mut output = format!("G0 Z{:.3} F300\n", 0.);
     let mut last = Point3d::new(0., 0., 0.);
 
     for (layer_i, layer) in layers.iter().enumerate() {
@@ -358,7 +373,7 @@ fn main() -> Result<()> {
                 // next segment
                 if distance(&segment[0].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
                     output.push_str(&format!(
-                        "G0 Z0\nG0 X{:.2} Y{:.2}\n",
+                        "G0 Z0\nG0 X{:.3} Y{:.3}\n",
                         segment[0].pos.x, segment[0].pos.y
                     ));
                 }
@@ -369,7 +384,7 @@ fn main() -> Result<()> {
                     //    || !approx_eq!(f32, last.pos.z, point.pos.z, ulps = 3)
                     //{
                     output.push_str(&format!(
-                        "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                        "G1 X{:.3} Y{:.3} Z{:.3}\n",
                         point.pos.x, point.pos.y, point.pos.z
                     ));
                     //}
@@ -377,11 +392,11 @@ fn main() -> Result<()> {
                     last = *point;
                 }
                 output.push_str(&format!(
-                    "G1 X{:.2} Y{:.2} Z{:.2}\n",
+                    "G1 X{:.3} Y{:.3} Z{:.3}\n",
                     last.pos.x, last.pos.y, last.pos.z
                 ));
             }
-            output.push_str(&format!("G0 Z{:.2}\n", 0.));
+            output.push_str(&format!("G0 Z{:.3}\n", 0.));
         }
     }
     gcode_bar.set_style(ProgressStyle::default_bar().template("[4/4] Processing Gcode elapsed: {elapsed}"));
