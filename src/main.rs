@@ -247,9 +247,7 @@ fn main() -> Result<()> {
                         let y_offset = ((point.pos.y + tpoint.pos.y) * scale).round() as i32;
                         if x_offset < segments as i32 && x_offset >= 0 && y_offset < rows as i32 && y_offset >= 0 {
                             let new_pos = point.pos.z + tpoint.pos.z;
-                            // TODO: should the resolution here be hard coded? or use the configured
-                            // resolution?
-                            if current_layer_map[x_offset as usize][y_offset as usize].pos.z - new_pos > 0.0001 {
+                            if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
                             };
                         }
@@ -352,8 +350,8 @@ fn main() -> Result<()> {
         gcode_bar.inc(1);
         total_bar.tick();
         let mut islands = get_islands(&layer, opt.diameter);
-        islands = nn(&islands, last);
-        //islands = optimize_kopt(&islands, &last);
+        //islands = nn(&islands, last);
+        islands = optimize_kopt(&islands, &last);
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
