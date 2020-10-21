@@ -229,6 +229,10 @@ fn main() -> Result<()> {
                 if approx_eq!(f32, max, current_layer_map[x][y].pos.z, ulps = 3) {
                     max = f32::NAN;
                 }
+                // TODO: should the resolution here be hard coded? or use the configured resolution?
+                if max >= -0.0009 {
+                    max = f32::NAN;
+                }
                 column.push(Point3d::new(x as f32 / scale, y as f32 / scale, max));
             });
             column
@@ -243,7 +247,8 @@ fn main() -> Result<()> {
                         let y_offset = ((point.pos.y + tpoint.pos.y) * scale).round() as i32;
                         if x_offset < segments as i32 && x_offset >= 0 && y_offset < rows as i32 && y_offset >= 0 {
                             let new_pos = point.pos.z + tpoint.pos.z;
-                            if new_pos < current_layer_map[x_offset as usize][y_offset as usize].pos.z {
+                            // TODO: should the resolution here be hard coded? or use the configured resolution?
+                            if current_layer_map[x_offset as usize][y_offset as usize].pos.z - new_pos > 0.0001 {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
                             };
                         }
@@ -339,15 +344,16 @@ fn main() -> Result<()> {
     let mut file = File::create(opt.output)?;
     // start by moving to max Z
     // TODO: add actual feedrate
-    let mut output = format!("G0 Z{:.3} F300\n", 0.);
+    // TODO: save last point in history from previous run
     let mut last = Point3d::new(0., 0., 0.);
+    let mut output = format!("G0 Z{:.3} F300\nG0 X{:.3} Y{:.3}\n", 0., last[0], last[1]);
 
     for (layer_i, layer) in layers.iter().enumerate() {
         gcode_bar.inc(1);
         total_bar.tick();
         let mut islands = get_islands(&layer, opt.diameter);
-        //islands = nn(&islands, last);
-        islands = optimize_kopt(&islands, &last);
+        islands = nn(&islands, last);
+        //islands = optimize_kopt(&islands, &last);
         if opt.debug {
             for (island_i, island) in islands.iter().enumerate() {
                 let mut file = File::create(format!("island{}_{}.xyz", layer_i, island_i))?;
