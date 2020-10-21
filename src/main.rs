@@ -74,8 +74,9 @@ fn main() -> Result<()> {
     let scale = 1. / opt.resolution;
     let resolution = opt.resolution;
     let stepdown = opt.stepdown;
+    let toolnumber = opt.toolnumber.unwrap_or(1);
     let (tool, diameter) = if let Some(path) = opt.toolfile {
-         Tool::from_file(&path, opt.tooltable.unwrap(), opt.toolnumber.unwrap(), scale)?
+        Tool::from_file(&path, opt.tooltable.unwrap(), toolnumber, scale)?
     } else {
         if !opt.diameter.is_some() {
             return Err(Error::msg("Must specify diameter if not using a tool table"));
@@ -352,7 +353,7 @@ fn main() -> Result<()> {
     // TODO: add actual feedrate
     // TODO: save last point in history from previous run
     let mut last = Point3d::new(0., 0., 0.);
-    let mut output = format!("G0 Z{:.3} F300\nG0 X{:.3} Y{:.3}\n", 0., last[0], last[1]);
+    let mut output = format!("T{}\nM06\nG0 Z{:.3} F300\nG0 X{:.3} Y{:.3}\n", toolnumber, 0., last[0], last[1]);
 
     for (layer_i, layer) in layers.iter().enumerate() {
         gcode_bar.inc(1);
