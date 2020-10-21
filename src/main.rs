@@ -247,7 +247,8 @@ fn main() -> Result<()> {
                         let y_offset = ((point.pos.y + tpoint.pos.y) * scale).round() as i32;
                         if x_offset < segments as i32 && x_offset >= 0 && y_offset < rows as i32 && y_offset >= 0 {
                             let new_pos = point.pos.z + tpoint.pos.z;
-                            // TODO: should the resolution here be hard coded? or use the configured resolution?
+                            // TODO: should the resolution here be hard coded? or use the configured
+                            // resolution?
                             if current_layer_map[x_offset as usize][y_offset as usize].pos.z - new_pos > 0.0001 {
                                 current_layer_map[x_offset as usize][y_offset as usize].pos.z = new_pos;
                             };
@@ -267,8 +268,8 @@ fn main() -> Result<()> {
             file.write_all(output.as_bytes())?;
         }
 
-        if layers.len() > 0 {
-            if current_layer_map
+        if !layers.is_empty()
+            && current_layer_map
                 .par_iter()
                 .zip(&processed_map)
                 .all(|(column_cur, column_proc)| {
@@ -278,9 +279,8 @@ fn main() -> Result<()> {
                         .zip(column_proc)
                         .all(|(point_cur, point_proc)| point_cur == point_proc)
                 })
-            {
-                break;
-            }
+        {
+            break;
         }
 
         layers.push(layer);
