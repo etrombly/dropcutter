@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, Error};
 use float_cmp::approx_eq;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TickTimeLimit};
 use printer_geo::{
@@ -6,6 +6,7 @@ use printer_geo::{
     config::*,
     geo::*,
     stl::*,
+    tool::*,
     tsp::{nn::*, two_opt::*},
     vulkan::{
         compute::*,
@@ -70,12 +71,19 @@ pub fn generate_rest_map(heightmap: &[Vec<Point3d>]) -> Vec<Vec<Point3d>> {
 fn main() -> Result<()> {
     // parse input args, may remove this once I build the GUI
     let opt = Opt::from_args();
-    let radius = opt.diameter / 2.;
-    let stepover = opt.diameter * (opt.stepover / 100.);
     let scale = 1. / opt.resolution;
     let resolution = opt.resolution;
     let stepdown = opt.stepdown;
-    let tool = opt.tool.create(opt.diameter, opt.angle, scale);
+    let (tool, diameter) = if let Some(path) = opt.toolfile {
+         Tool::from_file(&path, opt.tooltable.unwrap(), opt.toolnumber.unwrap(), scale)?
+    } else {
+        if !opt.diameter.is_some() {
+            return Err(Error::msg("Must specify diameter if not using a tool table"));
+        }
+        (opt.tool.create(opt.diameter.unwrap(), opt.angle, scale), opt.diameter.unwrap())
+    };
+    let radius = diameter / 2.;
+    let stepover = diameter * (opt.stepover / 100.);
 
     let mp = Arc::new(MultiProgress::with_draw_target(ProgressDrawTarget::stderr_nohz()));
     let partition_bar = mp.add(ProgressBar::new(0));
@@ -349,7 +357,7 @@ fn main() -> Result<()> {
     for (layer_i, layer) in layers.iter().enumerate() {
         gcode_bar.inc(1);
         total_bar.tick();
-        let mut islands = get_islands(&layer, opt.diameter);
+        let mut islands = get_islands(&layer, diameter);
         //islands = nn(&islands, last);
         islands = optimize_kopt(&islands, &last);
         if opt.debug {
@@ -368,7 +376,7 @@ fn main() -> Result<()> {
                 // TODO: instead of retracting to safe height build a move to travel closer to
                 // model if the segments aren't adjacent retract and travel to
                 // next segment
-                if distance(&segment[0].pos.xy(), &last.pos.xy()) > opt.diameter * 1.5 {
+                if distance(&segment[0].pos.xy(), &last.pos.xy()) > diameter * 1.5 {
                     output.push_str(&format!(
                         "G0 Z0\nG0 X{:.3} Y{:.3}\n",
                         segment[0].pos.x, segment[0].pos.y
